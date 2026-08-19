@@ -1619,30 +1619,25 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
 var CEDULA_ACTUAL = '';
 var RSALES_DATA = null;
 var RESULTADO_ACTUAL = null;
-var SUBJECT_INDEX = 0;  // contador para ciclar sujetos
+var SUBJECT_INDEX = 0;
 
-// ── Pre-calentar cache RSales ──────────────────────────
 (function(){
   fetch('/api/credit/warm-rsales').catch(function(){});
 })();
 
-// ── Preview de documentos subidos ──────────────────────
 function previewDoc(input, previewId) {
   var el = document.getElementById(previewId);
-  if (!input.files || !input.files[0]) {
-    el.innerHTML = '';
-    return;
-  }
+  if (!input.files || !input.files[0]) { el.innerHTML = ''; return; }
   var file = input.files[0];
   if (file.type.indexOf('image') >= 0) {
     var reader = new FileReader();
     reader.onload = function(e) {
       el.innerHTML = '<img src="' + e.target.result + '">' +
-        '<div class="doc-ok">✓ ' + file.name + '</div>';
+        '<div class="doc-ok">&#10003; ' + file.name + '</div>';
     };
     reader.readAsDataURL(file);
   } else {
-    el.innerHTML = '<div class="doc-ok">✓ ' + file.name + ' (' +
+    el.innerHTML = '<div class="doc-ok">&#10003; ' + file.name + ' (' +
       (file.size/1024).toFixed(1) + ' KB)</div>';
   }
 }
@@ -1658,49 +1653,21 @@ function getDocsFlags() {
   };
 }
 
-// ── Sujetos de prueba ──────────────────────────────────
 var SUBJECTS = {{ subjects_json|safe }};
 
-// ── Cargar siguiente sujeto (cada click = uno diferente) ──
+function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+
+function toast(msg){ var t=document.createElement('div'); t.className='toast show'; t.innerHTML='<span class="dot"></span>'+msg;
+  document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
+
 function cargarSiguienteSujeto() {
-  if (!SUBJECTS || SUBJECTS.length === 0) return;
+  if (!SUBJECTS || SUBJECTS.length === 0) { alert('No hay sujetos de prueba'); return; }
   var s = SUBJECTS[SUBJECT_INDEX % SUBJECTS.length];
   SUBJECT_INDEX++;
-  cargarSujeto(s.cedula_nit);
+  _llenarFormulario(s);
 }
 
-function renderSubjects(list) {
-  var html = '';
-  list.forEach(function(s){
-    var badges = '';
-    if (s.mora) badges += '<span class="mini-badge warn">MORA</span>';
-    if (s.castigada) badges += '<span class="mini-badge warn">CASTIGADA</span>';
-    if (s.credito_aprobado) badges += '<span class="mini-badge good">\$'+(s.credito_aprobado||0).toLocaleString('es-CO')+'</span>';
-    html += '<div class="opt" onclick="cargarSujeto(\''+s.cedula_nit+'\')">'+
-      '<b>'+escH(s.nombre)+'</b>'+badges+
-      '<div class="sub">CC '+s.cedula_nit+
-        (s.ano_dato_compras?' · Compras '+s.ano_dato_compras:'')+
-        (s.ejecutivo?' · '+s.ejecutivo:'')+
-      '</div></div>';
-  });
-  document.getElementById('subjects-options').innerHTML = html || '<div class="opt" style="color:var(--text-faint)">Sin resultados</div>';
-}
-
-function filterSubjects() {
-  var q = (document.getElementById('subj-search').value || '').toUpperCase();
-  if (!q) { renderSubjects(SUBJECTS); return; }
-  var filt = SUBJECTS.filter(function(s){
-    return (s.nombre||'').toUpperCase().indexOf(q) >= 0 || (s.cedula_nit||'').indexOf(q) >= 0;
-  });
-  renderSubjects(filt);
-}
-
-function cargarSujeto(cedula) {
-  var s = null;
-  for (var i=0; i<SUBJECTS.length; i++) {
-    if (SUBJECTS[i].cedula_nit === cedula) { s = SUBJECTS[i]; break; }
-  }
-  if (!s) return;
+function _llenarFormulario(s) {
   document.getElementById('cr-nombre').value = s.nombre || '';
   document.getElementById('cr-cedula').value = s.cedula_nit || '';
   document.getElementById('cr-tipo').value = s.tipo_solicitud || 'SOLICITUD DE CREDITO';
@@ -1721,13 +1688,48 @@ function cargarSujeto(cedula) {
   document.getElementById('cr-obs').value = s.observaciones || '';
   CEDULA_ACTUAL = s.cedula_nit;
   document.getElementById('subjects-list').classList.add('hidden');
-  var moraTag = s.mora ? ' ⚠MORA' : '';
-  var castTag = s.castigada ? ' ⚠CASTIGO' : '';
-  toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + moraTag + castTag);
-  // Auto-evaluar después de 500ms
+  var tags = '';
+  if (s.mora) tags += ' &#9888;MORA';
+  if (s.castigada) tags += ' &#9888;CASTIGO';
+  toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + tags);
   setTimeout(function(){
     document.getElementById('credito-form').dispatchEvent(new Event('submit'));
   }, 500);
+}
+
+function renderSubjects(list) {
+  var html = '';
+  for (var i = 0; i < list.length; i++) {
+    var s = list[i];
+    var badges = '';
+    if (s.mora) badges += '<span class="mini-badge warn">MORA</span>';
+    if (s.castigada) badges += '<span class="mini-badge warn">CASTIGADA</span>';
+    if (s.credito_aprobado) badges += '<span class="mini-badge good">$' + (s.credito_aprobado||0).toLocaleString('es-CO') + '</span>';
+    html += '<div class="opt" data-idx="' + i + '">' +
+      '<b>' + escH(s.nombre) + '</b>' + badges +
+      '<div class="sub">CC ' + escH(s.cedula_nit) +
+        (s.ano_dato_compras ? ' &#183; Compras ' + s.ano_dato_compras : '') +
+        (s.ejecutivo ? ' &#183; ' + escH(s.ejecutivo) : '') +
+      '</div></div>';
+  }
+  document.getElementById('subjects-options').innerHTML = html || '<div class="opt" style="color:var(--text-faint)">Sin resultados</div>';
+  var opts = document.getElementById('subjects-options').querySelectorAll('.opt');
+  for (var j = 0; j < opts.length; j++) {
+    opts[j].addEventListener('click', function() {
+      var idx = parseInt(this.getAttribute('data-idx'));
+      SUBJECT_INDEX = idx;
+      cargarSiguienteSujeto();
+    });
+  }
+}
+
+function filterSubjects() {
+  var q = (document.getElementById('subj-search').value || '').toUpperCase();
+  if (!q) { renderSubjects(SUBJECTS); return; }
+  var filt = SUBJECTS.filter(function(s){
+    return (s.nombre||'').toUpperCase().indexOf(q) >= 0 || (s.cedula_nit||'').indexOf(q) >= 0;
+  });
+  renderSubjects(filt);
 }
 
 renderSubjects(SUBJECTS);
@@ -1882,10 +1884,6 @@ function limpiarForm() {
   document.getElementById('rsales-status').style.display = 'none';
   CEDULA_ACTUAL = ''; RSALES_DATA = null; RESULTADO_ACTUAL = null;
 }
-
-function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
-function toast(msg){ var t=document.createElement('div'); t.className='toast show'; t.innerHTML='<span class="dot"></span>'+msg;
-  document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
 </script>
 """ + ui_theme.SHELL_CLOSE
 
