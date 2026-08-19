@@ -82,7 +82,7 @@ start_retention_janitor(
 # --- API REST pública (/api/v1) --------------------------------------------
 # Se monta como Blueprint independiente; no altera la UI HTML de esta app.
 # Documentación interactiva en /api/v1/docs. Ver api.py y API.md.
-from api import register_api
+from api_routes import register_api
 register_api(app, CFG, SOLVER, DATA)
 
 # --- Autenticación (login OTP + Microsoft SSO + RBAC) -----------------------

@@ -71,7 +71,7 @@ except Exception:
     pass
 
 # ── API REST ───────────────────────────────────────────────────────
-from api import register_api as _register_api
+from api_routes import register_api as _register_api
 _register_api(app, CFG, SOLVER, DATA)
 
 # ── Auth ───────────────────────────────────────────────────────────
