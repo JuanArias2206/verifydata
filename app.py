@@ -1512,27 +1512,27 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
       <div class="field-grid">
         <div class="field field-compact">
           <label>Crédito actual ($)</label>
-          <input name="credito_actual" id="cr-cactual" type="number" placeholder="0" step="1">
+          <input name="credito_actual" id="cr-cactual" type="number" placeholder="0" step="any">
         </div>
         <div class="field field-compact">
           <label>Monto a solicitar ($)</label>
-          <input name="monto_solicitar" id="cr-msolicitar" type="number" placeholder="0" step="1">
+          <input name="monto_solicitar" id="cr-msolicitar" type="number" placeholder="0" step="any">
         </div>
         <div class="field field-compact">
           <label>Cupo inicial ($)</label>
-          <input name="cupo_inicial" id="cr-cinicial" type="number" placeholder="0" step="1">
+          <input name="cupo_inicial" id="cr-cinicial" type="number" placeholder="0" step="any">
         </div>
         <div class="field field-compact">
           <label>Promedio compras ($)</label>
-          <input name="promedio_compras" id="cr-pcompras" type="number" placeholder="0" step="1">
+          <input name="promedio_compras" id="cr-pcompras" type="number" placeholder="0" step="any">
         </div>
         <div class="field field-compact">
           <label>Compra mínima ($)</label>
-          <input name="compra_minima" id="cr-cmin" type="number" placeholder="0" step="1">
+          <input name="compra_minima" id="cr-cmin" type="number" placeholder="0" step="any">
         </div>
         <div class="field field-compact">
           <label>Compra máxima ($)</label>
-          <input name="compra_maxima" id="cr-cmax" type="number" placeholder="0" step="1">
+          <input name="compra_maxima" id="cr-cmax" type="number" placeholder="0" step="any">
         </div>
         <div class="field field-compact">
           <label>Número de compras</label>
@@ -1544,7 +1544,7 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
         </div>
         <div class="field field-compact">
           <label>Promedio de pago (días)</label>
-          <input name="promedio_pago_dias" id="cr-ppago" type="number" placeholder="30" step="1">
+          <input name="promedio_pago_dias" id="cr-ppago" type="number" placeholder="30" step="any">
         </div>
       </div>
     </div>
