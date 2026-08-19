@@ -1454,8 +1454,11 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
   </div>
 
   <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
-    <button type="button" class="btn btn-secondary" onclick="document.getElementById('subjects-list').classList.toggle('hidden')">
+    <button type="button" class="btn btn-secondary" onclick="cargarSiguienteSujeto()">
       📋 Usar sujetos de prueba (Excel)
+    </button>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('subjects-list').classList.toggle('hidden')" style="font-size:11px">
+      Ver lista completa
     </button>
     <button type="button" class="btn btn-ghost btn-sm" onclick="descargarExcel()" id="btn-descargar" style="display:none">
       ⬇ Descargar Excel
@@ -1616,6 +1619,7 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
 var CEDULA_ACTUAL = '';
 var RSALES_DATA = null;
 var RESULTADO_ACTUAL = null;
+var SUBJECT_INDEX = 0;  // contador para ciclar sujetos
 
 // ── Pre-calentar cache RSales ──────────────────────────
 (function(){
@@ -1656,6 +1660,14 @@ function getDocsFlags() {
 
 // ── Sujetos de prueba ──────────────────────────────────
 var SUBJECTS = {{ subjects_json|safe }};
+
+// ── Cargar siguiente sujeto (cada click = uno diferente) ──
+function cargarSiguienteSujeto() {
+  if (!SUBJECTS || SUBJECTS.length === 0) return;
+  var s = SUBJECTS[SUBJECT_INDEX % SUBJECTS.length];
+  SUBJECT_INDEX++;
+  cargarSujeto(s.cedula_nit);
+}
 
 function renderSubjects(list) {
   var html = '';
@@ -1709,7 +1721,13 @@ function cargarSujeto(cedula) {
   document.getElementById('cr-obs').value = s.observaciones || '';
   CEDULA_ACTUAL = s.cedula_nit;
   document.getElementById('subjects-list').classList.add('hidden');
-  toast('Sujeto cargado: ' + (s.nombre||'').slice(0,40) + ' — haz clic en Evaluar');
+  var moraTag = s.mora ? ' ⚠MORA' : '';
+  var castTag = s.castigada ? ' ⚠CASTIGO' : '';
+  toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + moraTag + castTag);
+  // Auto-evaluar después de 500ms
+  setTimeout(function(){
+    document.getElementById('credito-form').dispatchEvent(new Event('submit'));
+  }, 500);
 }
 
 renderSubjects(SUBJECTS);
