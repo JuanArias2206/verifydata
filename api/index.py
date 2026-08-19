@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 # ── Ensure project root is in sys.path ────────────────────────────
@@ -30,58 +29,14 @@ os.environ.setdefault("VERIFYDATA_DB_PATH", str(_tmp_db))
 
 # ── Asegurar directorios mínimos ───────────────────────────────────
 _tmp_data = Path("/tmp/data")
-_certs = _tmp_data / "certs"
-_screenshots = _tmp_data / "screenshots"
-for _d in (_tmp_data, _certs, _screenshots):
+for _d in (_tmp_data, _tmp_data / "certs", _tmp_data / "screenshots"):
     _d.mkdir(parents=True, exist_ok=True)
 
-# ── Import and create the Flask app (cached at module level) ───────
-from config import load_config
-CFG = load_config()
-
-# Override DB path for serverless env
-CFG["database"]["path"] = os.environ.get("VERIFYDATA_DB_PATH", str(_tmp_db))
-
-from db import init_db, set_db_path
-DB_PATH = Path(CFG["database"]["path"])
-set_db_path(DB_PATH)
-init_db(DB_PATH)
-
-from sources import registry
-from solvers import get_default_solver
-SOLVER = get_default_solver()
-
-import ui_theme
-from flask import Flask
-
-app = Flask(__name__)
-
-_session_secret = os.environ.get("SESSION_SECRET", "")
-if not _session_secret:
-    import secrets
-    _session_secret = secrets.token_hex(32)
-app.secret_key = _session_secret
-
-# ── Maintenance ────────────────────────────────────────────────────
-DATA = _tmp_data
-try:
-    from maintenance import ensure_data_dirs
-    ensure_data_dirs(DATA)
-except Exception:
-    pass
-
-# ── API REST ───────────────────────────────────────────────────────
-from api_routes import register_api as _register_api
-_register_api(app, CFG, SOLVER, DATA)
-
-# ── Auth ───────────────────────────────────────────────────────────
-import auth as _auth
-app.register_blueprint(_auth.auth_bp)
-
-# ── Import app routes (they use @app.route) ───────────────────────
-# Las rutas de app.py se definen en __main__, por eso importamos el
-# módulo como side-effect.
+# ── Import app module (this does EVERYTHING: config, db, routes, api, auth) ──
 import app as _app_module
+
+# ── Get the Flask app from app.py ──────────────────────────────────
+app = _app_module.app
 
 # ── Vercel handler: expone `app` para @vercel/python ──────────────
 # No se necesita main — Vercel llama a app directamente.
