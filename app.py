@@ -1774,6 +1774,12 @@ function filterSubjects() {
 
 renderSubjects(SUBJECTS);
 
+// ── Form submit handler ─────────────────────────────────
+document.getElementById('credito-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  ejecutarCheckIntegral();
+});
+
 // ── Check integral: crédito + antecedentes ──────────────
 var CHECK_EN_CURSO = false;
 function ejecutarCheckIntegral() {
@@ -2101,7 +2107,7 @@ def api_credit_evaluate():
     from credit_risk import build_credit_profile
 
     data = request.get_json(silent=True) or {}
-    cedula = data.get("cedula_nit", "")
+    cedula = data.get("cedula") or data.get("cedula_nit", "")
     if not cedula:
         return jsonify({"ok": False, "error": "Cédula/NIT requerido"}), 400
 
@@ -2481,7 +2487,7 @@ def api_credit_full_check():
     from credit_risk import build_credit_profile
 
     data = request.get_json(silent=True) or {}
-    cedula = data.get("cedula_nit", "")
+    cedula = data.get("cedula") or data.get("cedula_nit", "")
     nombre = data.get("nombre", "")
     if not cedula:
         return jsonify({"ok": False, "error": "Cédula/NIT requerido"}), 400
