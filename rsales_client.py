@@ -304,21 +304,25 @@ class RsalesClient:
                 break
 
         if not customer:
-            # Usar el índice cacheado en vez de cargar todos los clientes
+            # Buscar en el índice cacheado y usar los datos directamente
             try:
                 from rsales_client import _get_customer_index
                 idx = _get_customer_index()
                 match = idx.get(client_code)
-                if match:
-                    code = match.get("code", client_code)
-                    customers = self._get_all_paged(
-                        "/customers", {"code": code}, limit=10
-                    )
-                    for c in customers:
-                        cid = c.get("code") or c.get("client_code") or ""
-                        if cid == code:
-                            customer = c
+                if not match:
+                    # Buscar por code en el índice
+                    for k, v in idx.items():
+                        if v.get("code") == client_code:
+                            match = v
                             break
+                if match:
+                    # Construir objeto customer mínimo desde el índice
+                    customer = {
+                        "code": client_code,
+                        "name": match.get("name", ""),
+                        "nit": client_code,
+                        "city": match.get("city", ""),
+                    }
             except Exception:
                 pass
 

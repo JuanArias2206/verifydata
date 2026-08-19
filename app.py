@@ -1814,16 +1814,10 @@ function ejecutarCheckIntegral() {
     for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
     if (d.ok) {
       RESULTADO_ACTUAL = d;
-      try {
-        renderCheckIntegral(d);
-      } catch(err) {
-        status.innerHTML = '<span style="color:#dc2626">&#10007; Error renderizando: ' + escH(err.message) + '</span>';
-        CHECK_EN_CURSO = false;
-        for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
-        return;
-      }
       document.getElementById('btn-descargar').style.display = 'inline-flex';
-      status.innerHTML = '&#10003; Check completo — <a href="/credit/results/' + d.result_token + '" style="color:var(--violet);font-weight:600">Ver resultado completo &#8594;</a>';
+      status.innerHTML = '&#10003; Check completo — Redirigiendo...';
+      // Redirigir directo a la página de resultados
+      window.location.href = '/credit/results/' + d.result_token;
     } else {
       status.innerHTML = '<span style="color:#dc2626">&#10007; Error: ' + escH(d.error || 'Desconocido') + '</span>';
     }
