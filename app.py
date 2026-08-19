@@ -1454,11 +1454,11 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
   </div>
 
   <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
-    <button type="button" class="btn btn-secondary" onclick="cargarSiguienteSujeto()">
-      📋 Usar sujetos de prueba (Excel)
+    <button type="button" class="btn btn-primary" onclick="cargarSiguienteSujeto()" style="font-size:14px;padding:12px 24px">
+      ⚡ Cargar siguiente cliente de prueba
     </button>
-    <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('subjects-list').classList.toggle('hidden')" style="font-size:11px">
-      Ver lista completa
+    <button type="button" class="btn btn-secondary" onclick="document.getElementById('subjects-list').classList.toggle('hidden')">
+      📋 Ver lista de clientes
     </button>
     <button type="button" class="btn btn-ghost btn-sm" onclick="descargarExcel()" id="btn-descargar" style="display:none">
       ⬇ Descargar Excel
@@ -1693,8 +1693,8 @@ function _llenarFormulario(s) {
   if (s.castigada) tags += ' &#9888;CASTIGO';
   toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + tags);
   setTimeout(function(){
-    document.getElementById('credito-form').dispatchEvent(new Event('submit'));
-  }, 500);
+    ejecutarCheckIntegral();
+  }, 300);
 }
 
 function renderSubjects(list) {
@@ -1734,63 +1734,150 @@ function filterSubjects() {
 
 renderSubjects(SUBJECTS);
 
-// ── Form submit ─────────────────────────────────────────
-document.getElementById('credito-form').addEventListener('submit', function(e){
-  e.preventDefault();
-  var fd = new FormData(this);
+// ── Check integral: crédito + antecedentes ──────────────
+function ejecutarCheckIntegral() {
+  var fd = new FormData(document.getElementById('credito-form'));
   var data = {};
   fd.forEach(function(v,k){ data[k] = v; });
   CEDULA_ACTUAL = data.cedula || '';
 
-  document.getElementById('rsales-status').style.display = '';
-  document.getElementById('rsales-status').textContent = '⏳ Buscando en RSales…';
+  var status = document.getElementById('rsales-status');
+  status.style.display = '';
+  status.innerHTML = '&#9203; Ejecutando check integral...';
 
-  // Incluir flags de documentos
   var docs = getDocsFlags();
+  data.docs = docs;
 
-  // Construir perfil
-  fetch('/api/credit/evaluate', {
+  fetch('/api/credit/full-check', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      cedula_nit: data.cedula,
-      nombre: data.nombre,
-      tipo_solicitud: data.tipo_solicitud,
-      credito_actual: parseFloat(data.credito_actual) || 0,
-      monto_solicitar: parseFloat(data.monto_solicitar) || 0,
-      cupo_inicial: parseFloat(data.cupo_inicial) || 0,
-      promedio_compras: parseFloat(data.promedio_compras) || 0,
-      compra_minima: parseFloat(data.compra_minima) || 0,
-      compra_maxima: parseFloat(data.compra_maxima) || 0,
-      numero_compras: parseInt(data.numero_compras) || 0,
-      ano_dato_compras: parseInt(data.ano_dato_compras) || 2026,
-      promedio_pago_dias: parseFloat(data.promedio_pago_dias) || 0,
-      calificacion_datacredito: data.calificacion_datacredito ? parseFloat(data.calificacion_datacredito) : null,
-      consultas_6m: data.consultas_6m || '',
-      presenta_mora: document.getElementById('cr-mora').checked,
-      presenta_cartera_castigada: document.getElementById('cr-castigada').checked,
-      aprobacion: document.getElementById('cr-aprobacion').checked,
-      observaciones: data.observaciones || '',
-      docs: docs,
-    })
+    body: JSON.stringify(data)
   }).then(function(r){return r.json();}).then(function(d){
     if (d.ok) {
       RESULTADO_ACTUAL = d;
-      renderResultado(d);
+      renderCheckIntegral(d);
       document.getElementById('btn-descargar').style.display = 'inline-flex';
-      var rs = d.profile.fuentes && d.profile.fuentes.rsales;
-      document.getElementById('rsales-status').textContent = rs ? '✓ RSales cargado' : '(RSales no disponible para esta cédula)';
+      status.innerHTML = '&#10003; Check completo';
     } else {
-      alert('Error: ' + (d.error || 'Desconocido'));
-      document.getElementById('rsales-status').style.display = 'none';
+      status.innerHTML = '&#10007; Error: ' + (d.error || 'Desconocido');
     }
   }).catch(function(e){
-    alert('Error: ' + e.message);
-    document.getElementById('rsales-status').style.display = 'none';
+    status.innerHTML = '&#10007; Error de red: ' + e.message;
   });
-});
+}
 
-// ── Render resultado ────────────────────────────────────
+function renderCheckIntegral(d) {
+  var r = d.result;
+  var p = r.perfil_crediticio;
+  var ant = r.antecedentes || {};
+  var res = r.resumen_ejecutivo;
+  var bg = {'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
+  var color = bg[p.nivel_riesgo] || '#333';
+  var tagColor = res.aprobado ? '#15803d' : '#dc2626';
+  var tagText = res.aprobado ? 'APROBADO' : 'RECHAZADO';
+  var tagIcon = res.aprobado ? '&#10003;' : '&#10007;';
+
+  // Bloqueantes
+  var bloqueantesHtml = '';
+  if (res.bloqueantes && res.bloqueantes.length) {
+    bloqueantesHtml = '<div style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.2);border-radius:10px;padding:14px;margin-top:12px">'+
+      '<div style="font-weight:700;font-size:13px;color:#dc2626;margin-bottom:8px">&#9888; BLOQUEANTES ENCONTRADOS</div>';
+    for (var i = 0; i < res.bloqueantes.length; i++) {
+      bloqueantesHtml += '<div style="color:#991b1b;font-size:12px;margin:4px 0;padding:6px 10px;background:rgba(220,38,38,.05);border-radius:6px">'+res.bloqueantes[i]+'</div>';
+    }
+    bloqueantesHtml += '</div>';
+  }
+
+  // Antecedentes
+  var antHtml = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px">';
+  var antKeys = Object.keys(ant);
+  for (var i = 0; i < antKeys.length; i++) {
+    var k = antKeys[i];
+    var v = ant[k];
+    var icon = v.matched ? '&#10007;' : (v.error ? '&#9888;' : '&#10003;');
+    var ic = v.matched ? '#dc2626' : (v.error ? '#d97706' : '#15803d');
+    var label = v.matched ? 'ENCONTRADO' : (v.error ? 'ERROR' : 'LIMPIO');
+    antHtml += '<div style="padding:10px;border-radius:8px;border:1px solid var(--line);font-size:11px">'+
+      '<div style="font-weight:700;margin-bottom:4px">'+escH(k)+'</div>'+
+      '<div style="color:'+ic+';font-weight:600">'+icon+' '+label+'</div>'+
+      (v.summary ? '<div style="color:var(--text-faint);margin-top:3px">'+escH(v.summary).slice(0,80)+'</div>' : '')+
+      '</div>';
+  }
+  antHtml += '</div>';
+
+  // RSales
+  var rsalesHtml = '';
+  if (p.rsales) {
+    var rs = p.rsales;
+    rsalesHtml = '<div style="margin-top:14px;padding:14px;background:rgba(62,122,249,.06);border-radius:10px">'+
+      '<div style="font-weight:700;font-size:12px;color:#3e7af9;margin-bottom:10px">&#128225; Datos RSales (ventasremotas.com)</div>'+
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px">'+
+        '<div><b>Cartera total</b><br>$'+Number(rs.cartera_total||0).toLocaleString('es-CO')+'</div>'+
+        '<div><b>Cartera vencida</b><br><span style="color:'+(rs.pct_vencida>30?'#dc2626':'green')+'">$'+Number(rs.cartera_vencida||0).toLocaleString('es-CO')+' ('+Number(rs.pct_vencida||0).toFixed(0)+'%)</span></div>'+
+        '<div><b>Compras total</b><br>$'+Number(rs.compras_total||0).toLocaleString('es-CO')+'</div>'+
+        '<div><b>Mora max</b><br>'+(rs.dias_mora_max||0)+' dias</div>'+
+      '</div></div>';
+  }
+
+  // Docs
+  var docsCount = 0;
+  var docsTotal = Object.keys(p.docs).length;
+  for (var dk in p.docs) { if (p.docs[dk]) docsCount++; }
+
+  // Factores
+  var posHtml = (p.factores_positivos||[]).map(function(f){return '<div style="color:#15803d;font-size:11px">&#10003; '+escH(f)+'</div>'}).join('');
+  var negHtml = (p.factores_negativos||[]).map(function(f){return '<div style="color:#991b1b;font-size:11px">&#10007; '+escH(f)+'</div>'}).join('');
+
+  var html = '<div style="border:2px solid '+color+';border-radius:14px;padding:24px;margin-top:20px">'+
+    // Header
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'+
+      '<div>'+
+        '<div style="font-weight:700;font-size:18px">'+escH(r.nombre)+'</div>'+
+        '<div style="font-size:12px;color:var(--text-faint)">CC/NIT: '+escH(r.cedula_nit)+'</div>'+
+      '</div>'+
+      '<div style="text-align:center;padding:12px 24px;border-radius:12px;background:'+tagColor+';color:#fff">'+
+        '<div style="font-size:24px">'+tagIcon+'</div>'+
+        '<div style="font-size:14px;font-weight:700">'+tagText+'</div>'+
+      '</div>'+
+    '</div>'+
+    // Score bar
+    '<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">'+
+      '<div style="font-size:48px;font-weight:800;color:'+color+'">'+p.score+'</div>'+
+      '<div>'+
+        '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint)">Score crediticio</div>'+
+        '<div style="font-size:14px;font-weight:700;color:'+color+'">'+p.nivel_riesgo+'</div>'+
+        '<div style="font-size:12px">'+escH(p.recomendacion)+'</div>'+
+      '</div>'+
+      '<div style="margin-left:auto;text-align:right">'+
+        '<div style="font-size:11px;color:var(--text-faint)">Monto max recomendado</div>'+
+        '<div style="font-size:20px;font-weight:700">$'+Number(p.monto_maximo_recomendado||0).toLocaleString('es-CO')+'</div>'+
+      '</div>'+
+    '</div>'+
+    rsalesHtml +
+    // Antecedentes
+    '<div style="margin-top:14px;padding:14px;background:rgba(105,65,244,.04);border-radius:10px">'+
+      '<div style="font-weight:700;font-size:12px;color:#6941f4;margin-bottom:4px">&#128269; Antecedentes y listas restrictivas</div>'+
+      antHtml +
+    '</div>'+
+    bloqueantesHtml +
+    // Docs + Factores
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">'+
+      '<div style="padding:12px;background:rgba(0,0,0,.02);border-radius:8px">'+
+        '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Documentos: '+docsCount+'/'+docsTotal+'</div>'+
+        (posHtml||'<span style="color:var(--text-faint);font-size:11px">Sin factores positivos</span>')+
+      '</div>'+
+      '<div style="padding:12px;background:rgba(0,0,0,.02);border-radius:8px">'+
+        '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Alertas</div>'+
+        (negHtml||'<span style="color:var(--text-faint);font-size:11px">Sin alertas</span>')+
+      '</div>'+
+    '</div>'+
+  '</div>';
+
+  document.getElementById('resultado').innerHTML = html;
+  document.getElementById('resultado').style.display = '';
+}
+
+// ── Render resultado (legacy, compatible) ─────────────
 var RC = {'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
 function renderResultado(d) {
   var p = d.profile;
@@ -2312,6 +2399,168 @@ def api_credit_excel_clientes():
     except Exception as e:
         log.exception("Error leyendo Excel")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ==============================================================
+#  CHECK INTEGRAL — Crédito + Antecedentes + OFAC + Judicial
+# ==============================================================
+@app.route("/api/credit/full-check", methods=["POST"])
+def api_credit_full_check():
+    """Check integral: perfil crediticio + antecedentes judiciales + OFAC.
+
+    Recibe cédula y datos básicos. Ejecuta en paralelo:
+      1. RSales (cartera, compras, frecuencia)
+      2. Búsqueda pública (OFAC, Policía, Registraduría, etc.)
+      3. Score crediticio
+    Retorna todo junto para la demo.
+    """
+    from flask import jsonify
+    from credit_risk import build_credit_profile
+
+    data = request.get_json(silent=True) or {}
+    cedula = data.get("cedula_nit", "")
+    nombre = data.get("nombre", "")
+    if not cedula:
+        return jsonify({"ok": False, "error": "Cédula/NIT requerido"}), 400
+
+    results = {"cedula_nit": cedula, "nombre": nombre}
+
+    # ── 1. Perfil crediticio (RSales + Excel) ──
+    excel_data = {
+        "nombre_cliente": nombre,
+        "cedula_nit": cedula,
+        "tipo_solicitud": data.get("tipo_solicitud", ""),
+        "credito_actual": data.get("credito_actual"),
+        "monto_solicitar": data.get("monto_solicitar"),
+        "cupo_inicial": data.get("cupo_inicial"),
+        "promedio_compras": data.get("promedio_compras"),
+        "compra_minima": data.get("compra_minima"),
+        "compra_maxima": data.get("compra_maxima"),
+        "numero_compras": data.get("numero_compras"),
+        "ano_dato_compras": data.get("ano_dato_compras"),
+        "promedio_pago_dias": data.get("promedio_pago_dias"),
+        "calificacion_datacredito": data.get("calificacion_datacredito"),
+        "consultas_6m_sector_real": data.get("consultas_6m", ""),
+        "presenta_mora": data.get("presenta_mora", False),
+        "presenta_cartera_castigada": data.get("presenta_cartera_castigada", False),
+        "aprobacion": data.get("aprobacion", False),
+        "observaciones": data.get("observaciones", ""),
+    }
+
+    rsales_profile = None
+    try:
+        from rsales_client import find_customer_in_rsales, get_rsales_client
+        cust = find_customer_in_rsales(cedula)
+        if cust:
+            rsales = get_rsales_client()
+            rsales_profile = rsales.get_customer_financial_profile(cust["code"])
+    except Exception as e:
+        log.info("RSales no disponible para %s: %s", cedula, e)
+
+    profile = build_credit_profile(
+        cedula_nit=cedula,
+        nombre=nombre,
+        rsales_profile=rsales_profile,
+        excel_data=excel_data,
+        docs=data.get("docs"),
+    )
+
+    results["perfil_crediticio"] = {
+        "score": profile.score,
+        "nivel_riesgo": profile.nivel_riesgo,
+        "recomendacion": profile.recomendacion,
+        "monto_maximo_recomendado": profile.monto_maximo_recomendado,
+        "alertas": profile.alertas,
+        "factores_positivos": profile.factores_positivos,
+        "factores_negativos": profile.factores_negativos,
+        "rsales": {
+            "cartera_total": profile.rsales_cartera_total,
+            "cartera_vencida": profile.rsales_cartera_vencida,
+            "pct_vencida": profile.rsales_pct_vencida,
+            "dias_mora_max": profile.rsales_dias_mora_max,
+            "compras_total": profile.rsales_compras_total,
+            "num_pedidos": profile.rsales_num_pedidos,
+            "ultima_compra": profile.rsales_ultima_compra_fecha,
+        } if profile.rsales_disponible else None,
+        "docs": {
+            "cedula_frontal": profile.docs_cedula_frontal,
+            "cedula_posterior": profile.docs_cedula_posterior,
+            "rut": profile.docs_rut,
+            "camara_comercio": profile.docs_camara_comercio,
+            "estados_financieros": profile.docs_estados_financieros,
+            "declaracion_renta": profile.docs_declaracion_renta,
+        },
+    }
+
+    # ── 2. Búsquedas públicas (antecedentes, OFAC, judicial) ──
+    # Solo fuentes RÁPIDAS (bulk list / API pública) para no bloquear
+    antecedentes = {}
+    fuentes_clave = [
+        ("OFAC SDN", "OFAC SDN — Specially Designated Nationals"),
+        ("OFAC Consolidado", "OFAC — Consolidated Sanctions List"),
+        ("UN Sanctions", "ONU — Lista Consolidada de Sanciones"),
+        ("BIS Denied", "BIS — Denied Persons List"),
+    ]
+
+    try:
+        from sources import registry
+        from sources.base import safe_fetch
+        from solvers import get_default_solver
+        solver = get_default_solver()
+        all_sources = registry.all_sources()
+
+        for label, src_name in fuentes_clave:
+            src = None
+            for s in all_sources:
+                if s.name == src_name:
+                    src = s
+                    break
+            if not src:
+                antecedentes[label] = {"status": "fuente_no_disponible"}
+                continue
+
+            try:
+                h = safe_fetch(src, nombre, cedula, None, solver)
+                antecedentes[label] = {
+                    "matched": h.matched,
+                    "summary": (h.summary or "")[:200],
+                    "error": h.error or None,
+                    "elapsed_s": round(h.elapsed_s, 1),
+                }
+            except Exception as e:
+                antecedentes[label] = {"matched": False, "error": str(e)[:200]}
+
+    except Exception as e:
+        log.warning("Búsquedas antecedentes fallaron: %s", e)
+
+    results["antecedentes"] = antecedentes
+
+    # ── 3. Resumen ejecutivo ──
+    tiene_antecedentes = any(
+        v.get("matched", False) for v in antecedentes.values()
+    )
+    ofac_match = antecedentes.get("OFAC SDN", {}).get("matched", False)
+    ofac_consolidado = antecedentes.get("OFAC Consolidado", {}).get("matched", False)
+    un_match = antecedentes.get("UN Sanctions", {}).get("matched", False)
+    bis_match = antecedentes.get("BIS Denied", {}).get("matched", False)
+
+    bloqueantes = []
+    if ofac_match or ofac_consolidado:
+        bloqueantes.append("⚠️ LISTA OFAC — Persona en lista de sanciones de EE.UU.")
+    if un_match:
+        bloqueantes.append("⚠️ ONU — En lista consolidada de sanciones de Naciones Unidas")
+    if bis_match:
+        bloqueantes.append("⚠️ BIS — En lista de personas negadas (Denied Persons List)")
+
+    results["resumen_ejecutivo"] = {
+        "aprobado": profile.score >= 500 and not tiene_antecedentes,
+        "bloqueantes": bloqueantes,
+        "tiene_antecedentes": tiene_antecedentes,
+        "score_crediticio": profile.score,
+        "nivel_riesgo": profile.nivel_riesgo,
+    }
+
+    return jsonify({"ok": True, "result": results})
 
 
 # ==============================================================

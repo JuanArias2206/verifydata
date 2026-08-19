@@ -330,11 +330,19 @@ def _compute_score(profile: CreditProfile) -> None:
     positivos: list[str] = []
     negativos: list[str] = []
 
+    # ── Si no hay datos de ninguna fuente, penalizar ──
+    sin_datos = not profile.rsales_disponible and not profile.excel_disponible
+    if sin_datos:
+        negativos.append("Sin datos financieros disponibles (sin RSales ni Excel)")
+
     # ── 1. Historial de pago (30%) ──
     score_pago = 300  # base: perfecto
 
-    # Cartera vencida (RSales)
-    if profile.rsales_disponible:
+    if sin_datos:
+        # Sin datos = no podemos verificar → score bajo
+        score_pago = 100
+        negativos.append("Historial de pago no verificable")
+    elif profile.rsales_disponible:
         pct_vencida = profile.rsales_pct_vencida
         if pct_vencida > 50:
             score_pago -= 250
@@ -375,7 +383,10 @@ def _compute_score(profile: CreditProfile) -> None:
     # ── 2. Capacidad de pago (20%) ──
     score_capacidad = 200  # base
 
-    if profile.rsales_disponible and profile.rsales_compras_total > 0:
+    if sin_datos:
+        score_capacidad = 60
+        negativos.append("Capacidad de pago no verificable")
+    elif profile.rsales_disponible and profile.rsales_compras_total > 0:
         # Relación cartera total / compras totales
         ratio = (
             profile.rsales_cartera_total / profile.rsales_compras_total
@@ -418,7 +429,10 @@ def _compute_score(profile: CreditProfile) -> None:
     # ── 3. Comportamiento de compras (20%) ──
     score_compras = 200
 
-    if profile.rsales_disponible:
+    if sin_datos:
+        score_compras = 50
+        negativos.append("Comportamiento de compras no verificable")
+    elif profile.rsales_disponible:
         # Frecuencia de compra
         freq = profile.rsales_frecuencia_meses
         if freq is not None:
