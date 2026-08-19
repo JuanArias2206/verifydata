@@ -1612,7 +1612,7 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
     </div>
 
     <div class="act-bar">
-      <button type="submit" class="btn btn-primary">📊 Evaluar riesgo crediticio</button>
+      <button type="button" class="btn btn-primary" onclick="ejecutarCheckIntegral()">📊 Evaluar riesgo crediticio</button>
       <button type="button" class="btn btn-ghost" onclick="limpiarForm()">Limpiar</button>
     </div>
   </form>
@@ -1806,12 +1806,22 @@ function ejecutarCheckIntegral() {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify(data)
-  }).then(function(r){return r.json();}).then(function(d){
+  }).then(function(r){
+    if (!r.ok) return r.text().then(function(t){ throw new Error('HTTP ' + r.status + ': ' + t.slice(0,200)); });
+    return r.json();
+  }).then(function(d){
     CHECK_EN_CURSO = false;
     for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
     if (d.ok) {
       RESULTADO_ACTUAL = d;
-      renderCheckIntegral(d);
+      try {
+        renderCheckIntegral(d);
+      } catch(err) {
+        status.innerHTML = '<span style="color:#dc2626">&#10007; Error renderizando: ' + escH(err.message) + '</span>';
+        CHECK_EN_CURSO = false;
+        for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
+        return;
+      }
       document.getElementById('btn-descargar').style.display = 'inline-flex';
       status.innerHTML = '&#10003; Check completo';
     } else {
@@ -2111,21 +2121,30 @@ def api_credit_evaluate():
     if not cedula:
         return jsonify({"ok": False, "error": "Cédula/NIT requerido"}), 400
 
+    def _float(v, default=0):
+        if v is None or v == "" or v == "None": return default
+        try: return float(v)
+        except (ValueError, TypeError): return default
+    def _int(v, default=0):
+        if v is None or v == "" or v == "None": return default
+        try: return int(float(v))
+        except (ValueError, TypeError): return default
+
     # Construir datos tipo Excel desde el formulario
     excel_data = {
         "nombre_cliente": data.get("nombre", ""),
         "cedula_nit": cedula,
         "tipo_solicitud": data.get("tipo_solicitud", ""),
-        "credito_actual": data.get("credito_actual"),
-        "monto_solicitar": data.get("monto_solicitar"),
-        "cupo_inicial": data.get("cupo_inicial"),
-        "promedio_compras": data.get("promedio_compras"),
-        "compra_minima": data.get("compra_minima"),
-        "compra_maxima": data.get("compra_maxima"),
-        "numero_compras": data.get("numero_compras"),
-        "ano_dato_compras": data.get("ano_dato_compras"),
-        "promedio_pago_dias": data.get("promedio_pago_dias"),
-        "calificacion_datacredito": data.get("calificacion_datacredito"),
+        "credito_actual": _float(data.get("credito_actual")),
+        "monto_solicitar": _float(data.get("monto_solicitar")),
+        "cupo_inicial": _float(data.get("cupo_inicial")),
+        "promedio_compras": _float(data.get("promedio_compras")),
+        "compra_minima": _float(data.get("compra_minima")),
+        "compra_maxima": _float(data.get("compra_maxima")),
+        "numero_compras": _int(data.get("numero_compras")),
+        "ano_dato_compras": _int(data.get("ano_dato_compras"), 2026),
+        "promedio_pago_dias": _float(data.get("promedio_pago_dias")),
+        "calificacion_datacredito": _float(data.get("calificacion_datacredito")),
         "consultas_6m_sector_real": data.get("consultas_6m", ""),
         "presenta_mora": data.get("presenta_mora", False),
         "presenta_cartera_castigada": data.get("presenta_cartera_castigada", False),
@@ -2494,21 +2513,38 @@ def api_credit_full_check():
 
     results = {"cedula_nit": cedula, "nombre": nombre}
 
+    # Helper: convertir string a float seguro
+    def _float(v, default=0):
+        if v is None or v == "" or v == "None":
+            return default
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return default
+
+    def _int(v, default=0):
+        if v is None or v == "" or v == "None":
+            return default
+        try:
+            return int(float(v))
+        except (ValueError, TypeError):
+            return default
+
     # ── 1. Perfil crediticio (RSales + Excel) ──
     excel_data = {
         "nombre_cliente": nombre,
         "cedula_nit": cedula,
         "tipo_solicitud": data.get("tipo_solicitud", ""),
-        "credito_actual": data.get("credito_actual"),
-        "monto_solicitar": data.get("monto_solicitar"),
-        "cupo_inicial": data.get("cupo_inicial"),
-        "promedio_compras": data.get("promedio_compras"),
-        "compra_minima": data.get("compra_minima"),
-        "compra_maxima": data.get("compra_maxima"),
-        "numero_compras": data.get("numero_compras"),
-        "ano_dato_compras": data.get("ano_dato_compras"),
-        "promedio_pago_dias": data.get("promedio_pago_dias"),
-        "calificacion_datacredito": data.get("calificacion_datacredito"),
+        "credito_actual": _float(data.get("credito_actual")),
+        "monto_solicitar": _float(data.get("monto_solicitar")),
+        "cupo_inicial": _float(data.get("cupo_inicial")),
+        "promedio_compras": _float(data.get("promedio_compras")),
+        "compra_minima": _float(data.get("compra_minima")),
+        "compra_maxima": _float(data.get("compra_maxima")),
+        "numero_compras": _int(data.get("numero_compras")),
+        "ano_dato_compras": _int(data.get("ano_dato_compras"), 2026),
+        "promedio_pago_dias": _float(data.get("promedio_pago_dias")),
+        "calificacion_datacredito": _float(data.get("calificacion_datacredito")),
         "consultas_6m_sector_real": data.get("consultas_6m", ""),
         "presenta_mora": data.get("presenta_mora", False),
         "presenta_cartera_castigada": data.get("presenta_cartera_castigada", False),

@@ -420,11 +420,16 @@ def _compute_score(profile: CreditProfile) -> None:
     else:
         # Sin datos RSales, revisar Excel
         if profile.excel_disponible:
-            compras_anuales = (
-                (profile.excel_promedio_compras or 0)
-                * (profile.excel_numero_compras or 0)
-            )
-            credito = profile.excel_credito_actual or 0
+            try:
+                promedio = float(profile.excel_promedio_compras or 0)
+                num_compras = int(float(profile.excel_numero_compras or 0))
+                compras_anuales = promedio * num_compras
+            except (ValueError, TypeError):
+                compras_anuales = 0
+            try:
+                credito = float(profile.excel_credito_actual or 0)
+            except (ValueError, TypeError):
+                credito = 0
             if compras_anuales > 0 and credito > 0:
                 ratio = credito / compras_anuales
                 if ratio > 1.5:
