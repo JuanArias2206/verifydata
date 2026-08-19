@@ -1732,9 +1732,6 @@ function _llenarFormulario(s) {
   if (s.mora) tags += ' &#9888;MORA';
   if (s.castigada) tags += ' &#9888;CASTIGO';
   toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + tags);
-  setTimeout(function(){
-    ejecutarCheckIntegral();
-  }, 300);
 }
 
 function renderSubjects(list) {
@@ -2741,6 +2738,125 @@ def _justificar_monto(profile, excel_data):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  ENVIAR RESULTADOS POR CORREO
+# ═══════════════════════════════════════════════════════════════════
+@app.route("/api/credit/send-email", methods=["POST"])
+def api_credit_send_email():
+    """Envía el reporte de crédito por correo electrónico."""
+    import json as _json
+    from flask import jsonify
+
+    data = request.get_json(silent=True) or {}
+    token = data.get("token", "")
+    destinatario = data.get("email", "darango.ccafs@gmail.com")
+
+    result = _CREDIT_RESULTS.get(token)
+    if not result:
+        return jsonify({"ok": False, "error": "Resultado no encontrado"}), 404
+
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        p = result.get("perfil_crediticio", {})
+        res = result.get("resumen_ejecutivo", {})
+        ant = result.get("antecedentes", {})
+
+        # Construir HTML del correo
+        color = "#15803d" if res.get("aprobado") else "#dc2626"
+        tag = "APROBADO" if res.get("aprobado") else "RECHAZADO"
+
+        ant_html = ""
+        for k, v in ant.items():
+            icon = "&#10003;" if not v.get("matched") else "&#10007;"
+            ic = "#15803d" if not v.get("matched") else "#dc2626"
+            lbl = "LIMPIO" if not v.get("matched") else "ENCONTRADO"
+            ant_html += f'<tr><td style="padding:8px;border-bottom:1px solid #eee">{k}</td><td style="padding:8px;border-bottom:1px solid #eee;color:{ic};font-weight:700">{icon} {lbl}</td></tr>'
+
+        bloqueantes_html = ""
+        for b in res.get("bloqueantes", []):
+            bloqueantes_html += f'<div style="padding:8px 12px;background:#fef2f2;border-left:3px solid #dc2626;margin:4px 0;font-size:13px;color:#991b1b">{b}</div>'
+
+        html_body = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+          <div style="background:linear-gradient(135deg,{color},{color}cc);color:#fff;padding:24px;border-radius:12px 12px 0 0">
+            <h1 style="margin:0;font-size:20px">VerifyData — Reporte de Riesgo Crediticio</h1>
+          </div>
+          <div style="padding:24px;background:#f9fafb;border:1px solid #e5e7eb;border-top:none">
+            <div style="background:#fff;padding:16px;border-radius:8px;margin-bottom:16px">
+              <h2 style="margin:0 0 8px;font-size:18px">{result.get('nombre', '')}</h2>
+              <p style="margin:0;color:#666">CC/NIT: {result.get('cedula_nit', '')}</p>
+            </div>
+            <div style="display:flex;gap:12px;margin-bottom:16px">
+              <div style="flex:1;background:#fff;padding:16px;border-radius:8px;text-align:center;border-top:3px solid {color}">
+                <div style="font-size:32px;font-weight:800;color:{color}">{p.get('score', 0)}</div>
+                <div style="font-size:11px;color:#999;text-transform:uppercase">Score</div>
+              </div>
+              <div style="flex:1;background:#fff;padding:16px;border-radius:8px;text-align:center;border-top:3px solid {color}">
+                <div style="font-size:16px;font-weight:700;color:{color}">{tag}</div>
+                <div style="font-size:11px;color:#999;text-transform:uppercase">Decision</div>
+              </div>
+              <div style="flex:1;background:#fff;padding:16px;border-radius:8px;text-align:center;border-top:3px solid #6941f4">
+                <div style="font-size:16px;font-weight:700;color:#6941f4">${res.get('monto_maximo', 0):,.0f}</div>
+                <div style="font-size:11px;color:#999;text-transform:uppercase">Monto Max</div>
+              </div>
+            </div>
+            <div style="background:#fff;padding:16px;border-radius:8px;margin-bottom:16px">
+              <h3 style="margin:0 0 10px;font-size:14px">Antecedentes</h3>
+              <table style="width:100%;border-collapse:collapse;font-size:13px">
+                {ant_html}
+              </table>
+            </div>
+            {f'<div style="margin-bottom:16px"><h3 style="margin:0 0 8px;font-size:14px;color:#dc2626">Bloqueantes</h3>{bloqueantes_html}</div>' if bloqueantes_html else ''}
+            <div style="background:#fff;padding:16px;border-radius:8px;margin-bottom:16px">
+              <h3 style="margin:0 0 10px;font-size:14px">Recomendacion</h3>
+              <p style="margin:0;font-size:13px">{p.get('recomendacion', '')}</p>
+            </div>
+            <div style="background:#fff;padding:16px;border-radius:8px;margin-bottom:16px">
+              <h3 style="margin:0 0 10px;font-size:14px">Justificacion del Monto</h3>
+              <p style="margin:0;font-size:13px">{res.get('monto_justificacion', '')}</p>
+            </div>
+          </div>
+          <div style="padding:16px;text-align:center;font-size:11px;color:#999">
+            VerifyData — Documento generado automaticamente
+          </div>
+        </div>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"VerifyData — Reporte {tag} — {result.get('nombre', '')}"
+        msg["From"] = "VerifyData <noreply@verifydata.app>"
+        msg["To"] = destinatario
+
+        msg.attach(MIMEText(html_body, "html"))
+
+        # Intentar enviar (si hay SMTP configurado)
+        smtp_host = os.environ.get("SMTP_HOST", "")
+        if smtp_host:
+            smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+            smtp_user = os.environ.get("SMTP_USERNAME", "")
+            smtp_pass = os.environ.get("SMTP_PASSWORD", "")
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+                server.starttls()
+                if smtp_user:
+                    server.login(smtp_user, smtp_pass)
+                server.sendmail("noreply@verifydata.app", destinatario, msg.as_string())
+            return jsonify({"ok": True, "message": f"Correo enviado a {destinatario}"})
+        else:
+            # Sin SMTP: devolver el HTML para preview
+            return jsonify({
+                "ok": True,
+                "message": "SMTP no configurado — preview del correo",
+                "preview_html": html_body,
+                "to": destinatario,
+            })
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  PÁGINA DE RESULTADOS — /credit/results/<token>
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/credit/results/<token>")
@@ -2961,6 +3077,7 @@ function render(){
   h+='<div class="actions">';
   h+='  <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
   h+='  <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
+  h+='  <button class="btn btn-secondary" onclick="enviarCorreo()" id="btn-email" style="padding:12px 28px;font-size:14px">&#9993; Enviar por Correo</button>';
   h+='</div>';
 
   $('app').innerHTML=h;
@@ -2969,6 +3086,38 @@ function render(){
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
 function N(v){return Number(v||0).toLocaleString('es-CO');}
 function P(v){return Number(v||0).toFixed(1)+'%';}
+
+function enviarCorreo(){
+  var btn=document.getElementById('btn-email');
+  if(!btn)return;
+  btn.disabled=true;
+  btn.innerHTML='&#8987; Enviando...';
+  var token=window.location.pathname.split('/').pop();
+  fetch('/api/credit/send-email',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({token:token,email:'darango.ccafs@gmail.com'})
+  }).then(function(r){return r.json();}).then(function(d){
+    btn.disabled=false;
+    if(d.ok){
+      btn.innerHTML='&#10003; Enviado a '+d.to;
+      btn.style.background='#15803d';
+      btn.style.color='#fff';
+      btn.style.borderColor='#15803d';
+      if(d.preview_html){
+        var w=window.open('','_blank','width=600,height=800');
+        w.document.write('<html><head><title>Preview Correo</title></head><body>'+d.preview_html+'</body></html>');
+      }
+    }else{
+      btn.innerHTML='&#10007; Error: '+esc(d.error||'Desconocido');
+      btn.style.color='#dc2626';
+    }
+  }).catch(function(e){
+    btn.disabled=false;
+    btn.innerHTML='&#10007; Error de red';
+    btn.style.color='#dc2626';
+  });
+}
 
 render();
 </script>
