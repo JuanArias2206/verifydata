@@ -48,9 +48,18 @@ class LocalListManager:
     DEFAULT_TTL = timedelta(days=7)  # refrescar cada 7 días
 
     def __init__(self, db_path: Path | None = None):
-        from db import DB_PATH
-        self.db_path = db_path or DB_PATH
-        init_db(self.db_path)
+        import os
+        if db_path:
+            self.db_path = db_path
+        elif os.environ.get("VERIFYDATA_ENV") == "production":
+            self.db_path = Path("/tmp/verifydata.db")
+        else:
+            from db import DB_PATH
+            self.db_path = DB_PATH
+        try:
+            init_db(self.db_path)
+        except Exception:
+            pass  # Read-only filesystem in Vercel
 
     def meta(self, source: str) -> dict | None:
         with get_db(self.db_path) as conn:
