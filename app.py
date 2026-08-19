@@ -1439,6 +1439,8 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
   .doc-preview{margin-top:6px;font-size:11px;color:var(--text-faint)}
   .doc-preview img{max-width:120px;max-height:80px;border-radius:6px;border:1px solid var(--line)}
   .doc-preview .doc-ok{color:#15803d;font-weight:600}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--violet);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+  @keyframes spin{to{transform:rotate(360deg)}}
   @media(max-width:800px){.cr-form .field-grid{grid-template-columns:1fr}.cr-result .stats{grid-template-columns:1fr 1fr}}
 {% endraw %}</style>
 
@@ -1735,15 +1737,23 @@ function filterSubjects() {
 renderSubjects(SUBJECTS);
 
 // ── Check integral: crédito + antecedentes ──────────────
+var CHECK_EN_CURSO = false;
 function ejecutarCheckIntegral() {
+  if (CHECK_EN_CURSO) return;
   var fd = new FormData(document.getElementById('credito-form'));
   var data = {};
   fd.forEach(function(v,k){ data[k] = v; });
   CEDULA_ACTUAL = data.cedula || '';
+  if (!data.cedula) { toast('Ingrese una cedula o NIT'); return; }
 
+  CHECK_EN_CURSO = true;
   var status = document.getElementById('rsales-status');
   status.style.display = '';
-  status.innerHTML = '&#9203; Ejecutando check integral...';
+  status.innerHTML = '<span class="spinner"></span> Ejecutando check integral...';
+
+  // Deshabilitar botón
+  var btns = document.querySelectorAll('.btn-primary');
+  for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
 
   var docs = getDocsFlags();
   data.docs = docs;
@@ -1753,16 +1763,20 @@ function ejecutarCheckIntegral() {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify(data)
   }).then(function(r){return r.json();}).then(function(d){
+    CHECK_EN_CURSO = false;
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
     if (d.ok) {
       RESULTADO_ACTUAL = d;
       renderCheckIntegral(d);
       document.getElementById('btn-descargar').style.display = 'inline-flex';
       status.innerHTML = '&#10003; Check completo';
     } else {
-      status.innerHTML = '&#10007; Error: ' + (d.error || 'Desconocido');
+      status.innerHTML = '<span style="color:#dc2626">&#10007; Error: ' + escH(d.error || 'Desconocido') + '</span>';
     }
   }).catch(function(e){
-    status.innerHTML = '&#10007; Error de red: ' + e.message;
+    CHECK_EN_CURSO = false;
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
+    status.innerHTML = '<span style="color:#dc2626">&#10007; Error de red: ' + escH(e.message) + '</span>';
   });
 }
 
@@ -1789,7 +1803,7 @@ function renderCheckIntegral(d) {
   }
 
   // Antecedentes
-  var antHtml = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px">';
+  var antHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:12px">';
   var antKeys = Object.keys(ant);
   for (var i = 0; i < antKeys.length; i++) {
     var k = antKeys[i];
@@ -1850,7 +1864,7 @@ function renderCheckIntegral(d) {
       '</div>'+
       '<div style="margin-left:auto;text-align:right">'+
         '<div style="font-size:11px;color:var(--text-faint)">Monto max recomendado</div>'+
-        '<div style="font-size:20px;font-weight:700">$'+Number(p.monto_maximo_recomendado||0).toLocaleString('es-CO')+'</div>'+
+        '<div style="font-size:20px;font-weight:700">$'+Number(res.monto_maximo||0).toLocaleString('es-CO')+'</div>'+
       '</div>'+
     '</div>'+
     rsalesHtml +
@@ -2447,6 +2461,17 @@ def api_credit_full_check():
         "observaciones": data.get("observaciones", ""),
     }
 
+    # Auto-lookup: si el formulario no trae datos financieros, buscar en Excel
+    try:
+        from excel_reader import get_client_by_cedula
+        excel_actual = get_client_by_cedula(cedula)
+        if excel_actual:
+            for k, v in excel_actual.items():
+                if excel_data.get(k) in (None, "", 0, False):
+                    excel_data[k] = v
+    except Exception:
+        pass
+
     rsales_profile = None
     try:
         from rsales_client import find_customer_in_rsales, get_rsales_client
@@ -2493,42 +2518,55 @@ def api_credit_full_check():
     }
 
     # ── 2. Búsquedas públicas (antecedentes, OFAC, judicial) ──
-    # Solo fuentes RÁPIDAS (bulk list / API pública) para no bloquear
+    # Solo fuentes RÁPIDAS (bulk list / API pública) — EN PARALELO
     antecedentes = {}
     fuentes_clave = [
         ("OFAC SDN", "OFAC SDN — Specially Designated Nationals"),
-        ("OFAC Consolidado", "OFAC — Consolidated Sanctions List"),
-        ("UN Sanctions", "ONU — Lista Consolidada de Sanciones"),
-        ("BIS Denied", "BIS — Denied Persons List"),
+        ("OFAC Consolidado", "OFAC — Lista Consolidada (Non-SDN, FSE, SSI, CAPTA)"),
+        ("ONU Sanciones", "ONU — UN Security Council Consolidated List"),
+        ("BIS Denied", "BIS — Denied Persons List (USA)"),
+        ("Banco Mundial", "Banco Mundial — Debarred Firms & Individuals"),
+        ("PEP Colombia", "PEP Colombia — Consulta agregada"),
+        ("SECOP Multas", "SECOP II — Multas y Sanciones"),
+        ("SECOP Contratos", "SECOP II — Contratos Electr\u00f3nicos"),
     ]
 
     try:
         from sources import registry
         from sources.base import safe_fetch
         from solvers import get_default_solver
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         solver = get_default_solver()
         all_sources = registry.all_sources()
 
-        for label, src_name in fuentes_clave:
-            src = None
-            for s in all_sources:
-                if s.name == src_name:
-                    src = s
-                    break
-            if not src:
-                antecedentes[label] = {"status": "fuente_no_disponible"}
-                continue
+        # Indexar fuentes por nombre
+        src_map = {}
+        for s in all_sources:
+            src_map[s.name] = s
 
+        def _fetch_one(label, src_name):
+            src = src_map.get(src_name)
+            if not src:
+                return label, {"matched": False, "error": "fuente_no_disponible"}
             try:
                 h = safe_fetch(src, nombre, cedula, None, solver)
-                antecedentes[label] = {
+                return label, {
                     "matched": h.matched,
                     "summary": (h.summary or "")[:200],
                     "error": h.error or None,
                     "elapsed_s": round(h.elapsed_s, 1),
                 }
             except Exception as e:
-                antecedentes[label] = {"matched": False, "error": str(e)[:200]}
+                return label, {"matched": False, "error": str(e)[:200]}
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(_fetch_one, lbl, sn): lbl
+                for lbl, sn in fuentes_clave
+            }
+            for f in as_completed(futures):
+                label, result = f.result()
+                antecedentes[label] = result
 
     except Exception as e:
         log.warning("Búsquedas antecedentes fallaron: %s", e)
@@ -2541,16 +2579,22 @@ def api_credit_full_check():
     )
     ofac_match = antecedentes.get("OFAC SDN", {}).get("matched", False)
     ofac_consolidado = antecedentes.get("OFAC Consolidado", {}).get("matched", False)
-    un_match = antecedentes.get("UN Sanctions", {}).get("matched", False)
+    onu_match = antecedentes.get("ONU Sanciones", {}).get("matched", False)
     bis_match = antecedentes.get("BIS Denied", {}).get("matched", False)
 
     bloqueantes = []
     if ofac_match or ofac_consolidado:
         bloqueantes.append("⚠️ LISTA OFAC — Persona en lista de sanciones de EE.UU.")
-    if un_match:
+    if onu_match:
         bloqueantes.append("⚠️ ONU — En lista consolidada de sanciones de Naciones Unidas")
     if bis_match:
         bloqueantes.append("⚠️ BIS — En lista de personas negadas (Denied Persons List)")
+    if antecedentes.get("World Bank", {}).get("matched", False):
+        bloqueantes.append("⚠️ WORLD BANK — Firma inhabilitada por Banco Mundial")
+    if antecedentes.get("PEP Colombia", {}).get("matched", False):
+        bloqueantes.append("⚠️ PEP — Persona Expuesta Políticamente (requiere debida diligencia)")
+    if antecedentes.get("SECOP Multas", {}).get("matched", False):
+        bloqueantes.append("⚠️ SECOP — Persona/Empresa con multas y sanciones en contratación pública")
 
     results["resumen_ejecutivo"] = {
         "aprobado": profile.score >= 500 and not tiene_antecedentes,
@@ -2558,6 +2602,8 @@ def api_credit_full_check():
         "tiene_antecedentes": tiene_antecedentes,
         "score_crediticio": profile.score,
         "nivel_riesgo": profile.nivel_riesgo,
+        "recomendacion": profile.recomendacion,
+        "monto_maximo": profile.monto_maximo_recomendado,
     }
 
     return jsonify({"ok": True, "result": results})

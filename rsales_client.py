@@ -304,13 +304,23 @@ class RsalesClient:
                 break
 
         if not customer:
-            # Intentar por nombre también
-            all_customers = self.get_all_customers()
-            for c in all_customers:
-                cid = c.get("code") or c.get("client_code") or ""
-                if cid == client_code:
-                    customer = c
-                    break
+            # Usar el índice cacheado en vez de cargar todos los clientes
+            try:
+                from rsales_client import _get_customer_index
+                idx = _get_customer_index()
+                match = idx.get(client_code)
+                if match:
+                    code = match.get("code", client_code)
+                    customers = self._get_all_paged(
+                        "/customers", {"code": code}, limit=10
+                    )
+                    for c in customers:
+                        cid = c.get("code") or c.get("client_code") or ""
+                        if cid == code:
+                            customer = c
+                            break
+            except Exception:
+                pass
 
         if not customer:
             return {"error": f"Cliente {client_code} no encontrado en RSales",

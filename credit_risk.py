@@ -330,19 +330,24 @@ def _compute_score(profile: CreditProfile) -> None:
     positivos: list[str] = []
     negativos: list[str] = []
 
-    # ── Si no hay datos de ninguna fuente, penalizar ──
+    # ── Evaluar disponibilidad de datos ──
     sin_datos = not profile.rsales_disponible and not profile.excel_disponible
+    datos_parciales = (profile.rsales_disponible and not profile.excel_disponible) or \
+                      (not profile.rsales_disponible and profile.excel_disponible)
     if sin_datos:
         negativos.append("Sin datos financieros disponibles (sin RSales ni Excel)")
+    elif datos_parciales:
+        negativos.append("Datos parciales: solo una fuente disponible (RSales o Excel)")
 
     # ── 1. Historial de pago (30%) ──
     score_pago = 300  # base: perfecto
 
     if sin_datos:
-        # Sin datos = no podemos verificar → score bajo
         score_pago = 100
         negativos.append("Historial de pago no verificable")
-    elif profile.rsales_disponible:
+    elif datos_parciales:
+        score_pago = 200  # penalización por datos incompletos
+    if profile.rsales_disponible:
         pct_vencida = profile.rsales_pct_vencida
         if pct_vencida > 50:
             score_pago -= 250
@@ -386,7 +391,9 @@ def _compute_score(profile: CreditProfile) -> None:
     if sin_datos:
         score_capacidad = 60
         negativos.append("Capacidad de pago no verificable")
-    elif profile.rsales_disponible and profile.rsales_compras_total > 0:
+    elif datos_parciales:
+        score_capacidad = 120  # penalización por datos incompletos
+    if profile.rsales_disponible and profile.rsales_compras_total > 0:
         # Relación cartera total / compras totales
         ratio = (
             profile.rsales_cartera_total / profile.rsales_compras_total
@@ -432,6 +439,8 @@ def _compute_score(profile: CreditProfile) -> None:
     if sin_datos:
         score_compras = 50
         negativos.append("Comportamiento de compras no verificable")
+    elif datos_parciales:
+        score_compras = 120
     elif profile.rsales_disponible:
         # Frecuencia de compra
         freq = profile.rsales_frecuencia_meses
