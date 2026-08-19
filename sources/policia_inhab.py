@@ -61,7 +61,7 @@ from .registry import register
 from logging_config import route_print_to_logger as _rptl
 print = _rptl(__name__)
 
-DATA = Path(__file__).parent.parent / "data"
+from sources.base import DATA
 (DATA / "screenshots").mkdir(parents=True, exist_ok=True)
 
 

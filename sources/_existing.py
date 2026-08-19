@@ -28,7 +28,7 @@ from ._browser_helper import _run_in_fresh_browser, goto_with_retry
 
 UA = "VerifyData-Demo/1.0 (contacto: verifydata.local)"
 TIMEOUT = 30
-DATA = Path(__file__).parent.parent / "data"
+from sources.base import DATA
 NOMBRE_MIN_LEN = 4
 
 
@@ -847,7 +847,7 @@ def _have_browser() -> bool:
 
 def _shot_save(page, source: str, query: str) -> str:
     """Guarda screenshot y devuelve path relativo."""
-    DATA = Path(__file__).parent.parent / "data"
+    from sources.base import DATA as _DATA; DATA = _DATA
     (DATA / "screenshots").mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^\w-]", "_", f"{source}_{query}")[:50]
     fname = f"screenshots/{safe}_{int(time.time())}.png"

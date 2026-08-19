@@ -20,8 +20,24 @@ El método `fetch` debe:
     capturar `CaptchaUnsolved` para devolver `Hit(..., captcha_required=True)`
 """
 from __future__ import annotations
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
+
+# ── DATA path: /tmp en Vercel, ./data en local ─────────────────────
+def get_data_path() -> Path:
+    """Devuelve el directorio de datos: /tmp/data en Vercel, ./data en local."""
+    if os.environ.get("VERIFYDATA_ENV") == "production":
+        p = Path("/tmp/data")
+    else:
+        p = Path(__file__).parent.parent / "data"
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "screenshots").mkdir(parents=True, exist_ok=True)
+    (p / "certs").mkdir(parents=True, exist_ok=True)
+    return p
+
+DATA = get_data_path()
 
 
 # ---------- Resultado ----------

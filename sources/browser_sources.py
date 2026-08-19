@@ -41,7 +41,7 @@ from .base import Hit
 from .registry import register
 
 
-DATA = Path(__file__).parent.parent / "data"
+from sources.base import DATA
 (DATA / "screenshots").mkdir(parents=True, exist_ok=True)
 
 

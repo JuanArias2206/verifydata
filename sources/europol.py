@@ -39,7 +39,7 @@ print = _rptl(__name__)
 
 # Path de los screenshots — sigue la convención de
 # demo/sources/_browser_helper.py: data/screenshots/
-DATA = Path(__file__).parent.parent / "data"
+from sources.base import DATA
 (DATA / "screenshots").mkdir(parents=True, exist_ok=True)
 
 

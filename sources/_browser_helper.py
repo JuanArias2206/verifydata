@@ -133,7 +133,7 @@ def _run_in_fresh_browser(fn: Callable) -> None:
 
 def _shot_save(page, source: str, query: str) -> str:
     """Guarda screenshot y devuelve path relativo."""
-    DATA = Path(__file__).parent.parent / "data"
+    DATA = get_data_path()
     (DATA / "screenshots").mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^\w-]", "_", f"{source}_{query}")[:50]
     fname = f"screenshots/{safe}_{int(time.time())}.png"

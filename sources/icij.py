@@ -72,7 +72,7 @@ def _icij_search(nombre: str, dataset: str = "offshore-leaks",
             # Guardar screenshot
             if take_screenshot:
                 try:
-                    DATA = Path(__file__).parent.parent / "data"
+                    from sources.base import DATA as _DATA; DATA = _DATA
                     (DATA / "screenshots").mkdir(parents=True, exist_ok=True)
                     safe_name = re.sub(r"[^\w-]", "_", f"icij_{dataset}_{nombre}")[:50]
                     fname = f"{safe_name}_{int(time.time())}.png"
