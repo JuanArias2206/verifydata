@@ -1,0 +1,478 @@
+[
+  {
+    "name": "Contaduría General de la Nación",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://www.contaduria.gov.co/",
+    "captcha": true,
+    "ctype": "login"
+  },
+  {
+    "name": "Contraloría General — Responsabilidad Fiscal",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://cfiscal.contraloria.gov.co/Certificados/CertificadoPersonaNatural.aspx",
+    "captcha": true,
+    "ctype": "recaptcha_v2"
+  },
+  {
+    "name": "Contraloría — Multas y Sanciones Fiscales (Datos Abiertos)",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://www.datos.gov.co/d/jr8e-e8tu",
+    "requires_captcha": false,
+    "method": "datos_abiertos"
+  },
+  {
+    "name": "Policia Nacional — Inhabilidades por delitos sexuales (Ley 1918)",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://inhabilidades.policia.gov.co:8080/consulta",
+    "captcha": true,
+    "ctype": "recaptcha_v2_enterprise"
+  },
+  {
+    "name": "Policía Nacional — Antecedentes Judiciales",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://antecedentes.policia.gov.co:7005/WebJudicial/",
+    "captcha": true,
+    "ctype": "recaptcha_v2_enterprise"
+  },
+  {
+    "name": "Policía — Delitos Sexuales contra Menores",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://inhabilidades.policia.gov.co:8080/",
+    "captcha": true,
+    "ctype": "image"
+  },
+  {
+    "name": "Procuraduría — Antecedentes Disciplinarios",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://www.procuraduria.gov.co/Pages/Consulta-de-Antecedentes.aspx",
+    "captcha": true,
+    "ctype": "trivia"
+  },
+  {
+    "name": "Procuraduría — SIRI Sanciones e Inhabilidades (Datos Abiertos)",
+    "category": "Antecedentes disciplinarios",
+    "url": "https://www.datos.gov.co/d/iaeu-rcn6",
+    "requires_captcha": false,
+    "method": "datos_abiertos"
+  },
+  {
+    "name": "JEPMS — Juzgados de Ejecución de Penas y Medidas de Seguridad",
+    "category": "Antecedentes judiciales",
+    "url": "https://procesojudicial.ramajudicial.gov.co/justicia21/Administracion/Ciudadanos/frmConsulta.aspx",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Juzgados TYBA — Justicia XXI (procesos)",
+    "category": "Antecedentes judiciales",
+    "url": "https://procesojudicial.ramajudicial.gov.co/justicia21/Administracion/Ciudadanos/frmConsulta.aspx?opcion=consulta",
+    "captcha": true,
+    "ctype": "image"
+  },
+  {
+    "name": "Pérdida de Investidura de Congresistas (Consejo de Estado)",
+    "category": "Antecedentes judiciales",
+    "url": "https://www.datos.gov.co/d/pywa-cq2f",
+    "requires_captcha": false,
+    "method": "datos_abiertos"
+  },
+  {
+    "name": "Rama Judicial — Procesos (demandante/demandado)",
+    "category": "Antecedentes judiciales",
+    "url": "https://siugj.ramajudicial.gov.co/principalPortal/consultarProceso.php",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "DIAN — Proveedores Ficticios (Boletín)",
+    "category": "Contratación pública",
+    "url": "https://www.dian.gov.co/Prensa/Paginas/NG-Comunicado-de-Prensa-091-2025.aspx",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "PACO — Portal Anticorrupción de Colombia",
+    "category": "Contratación pública",
+    "url": "https://portal.paco.gov.co/index.php?pagina=inicio",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "PTE — Grandes Contratistas del Estado (browser)",
+    "category": "Contratación pública",
+    "url": "https://www.pte.gov.co/contratos/los-100-contratos-mas-grandes-de-la-vigencia-actual",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "SECOP I — Multas y Sanciones",
+    "category": "Contratación pública",
+    "url": "https://www.datos.gov.co/resource/4n4q-k399.json",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "SECOP II — Contratos Electrónicos",
+    "category": "Contratación pública",
+    "url": "https://www.datos.gov.co/resource/jbjy-vk9h.json",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "SECOP II — Multas y Sanciones",
+    "category": "Contratación pública",
+    "url": "https://www.datos.gov.co/resource/it5q-hg94.json",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "ADB — Banco Asiático de Desarrollo (sancionados)",
+    "category": "Corrupción internacional",
+    "url": "https://lnadbg4.adb.org/oai001p.nsf/sancALLPublic?OpenView",
+    "requires_captcha": false,
+    "method": "bulk_cache"
+  },
+  {
+    "name": "BERD — Entidades Inelegibles (EBRD)",
+    "category": "Corrupción internacional",
+    "url": "https://www.ebrd.com/home/who-we-are/strategies-governance-compliance/ineligible-entities.html",
+    "requires_captcha": false,
+    "method": "bulk_cache"
+  },
+  {
+    "name": "BID — Comité de Sanciones (empresas y personas)",
+    "category": "Corrupción internacional",
+    "url": "https://www.iadb.org/en/who-we-are/transparency/sanctions-system/sanctioned-firms-and-individuals",
+    "requires_captcha": false,
+    "method": "bulk_cache"
+  },
+  {
+    "name": "FCPA — Foreign Corrupt Practices Act (Stanford)",
+    "category": "Corrupción internacional",
+    "url": "https://fcpa.stanford.edu/enforcement-actions.html",
+    "captcha": true,
+    "ctype": "login"
+  },
+  {
+    "name": "ICIJ — Bahamas Leaks",
+    "category": "Corrupción internacional",
+    "url": "https://offshoreleaks.icij.org/search?dt=bahamas-leaks",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "ICIJ — Offshore Leaks",
+    "category": "Corrupción internacional",
+    "url": "https://offshoreleaks.icij.org/search?dt=offshore-leaks",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "ICIJ — Panama Papers",
+    "category": "Corrupción internacional",
+    "url": "https://offshoreleaks.icij.org/search?dt=panama-papers",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "ICIJ — Pandora Papers",
+    "category": "Corrupción internacional",
+    "url": "https://offshoreleaks.icij.org/search?dt=pandora-papers",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "ICIJ — Paradise Papers",
+    "category": "Corrupción internacional",
+    "url": "https://offshoreleaks.icij.org/search?dt=paradise-papers",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "CBI — Most Wanted (India)",
+    "category": "Crimen y fugitivos",
+    "url": "https://cbi.gov.in/most-wanted",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "DSS — Diplomatic Security Most Wanted",
+    "category": "Crimen y fugitivos",
+    "url": "https://www.state.gov/diplomatic-security/dss-wanted",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "EPA — Fugitives (Environmental Protection Agency)",
+    "category": "Crimen y fugitivos",
+    "url": "https://www.epa.gov/enforcement/fugitives",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "EUROPOL — Most Wanted Fugitives",
+    "category": "Crimen y fugitivos",
+    "url": "https://eumostwanted.eu/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "FBI — Most Wanted",
+    "category": "Crimen y fugitivos",
+    "url": "https://www.fbi.gov/wanted",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Guardia Civil Española — Buscados (browser)",
+    "category": "Crimen y fugitivos",
+    "url": "https://web.guardiacivil.es/es/colaboracion/Buscados/buscados/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "ICE — Most Wanted",
+    "category": "Crimen y fugitivos",
+    "url": "https://www.ice.gov/most-wanted",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "INTERPOL — Red Notices (dataset)",
+    "category": "Crimen y fugitivos",
+    "url": "https://www.interpol.int/How-we-work/Notices/Red-Notices/View-Red-Notices",
+    "requires_captcha": false,
+    "method": "dataset_cache"
+  },
+  {
+    "name": "Policía Colombia — Fugitivos y Más Buscados",
+    "category": "Crimen y fugitivos",
+    "url": "https://www.policia.gov.co/contenido/mas-buscados",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "UK NCA — Most Wanted",
+    "category": "Crimen y fugitivos",
+    "url": "https://www.nationalcrimeagency.gov.uk/most-wanted",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Supersociedades — Información General de Sociedades",
+    "category": "Empresas y sociedades",
+    "url": "https://sucursal-digital-ext.supersociedades.gov.co/ConsultaGeneralSOC/dashboard",
+    "captcha": true,
+    "ctype": "recaptcha_v2"
+  },
+  {
+    "name": "RUES — Registro Único Empresarial y Social",
+    "category": "Identidad y registros básicos",
+    "url": "https://www.rues.org.co/",
+    "captcha": true,
+    "ctype": "recaptcha_v2"
+  },
+  {
+    "name": "RUT — DIAN (Registro Único Tributario)",
+    "category": "Identidad y registros básicos",
+    "url": "https://muisca.dian.gov.co/WebRutMuisca/DefConsultaEstadoRUT.faces",
+    "captcha": true,
+    "ctype": "image"
+  },
+  {
+    "name": "Registraduría — Defunciones (estado de la cédula)",
+    "category": "Identidad y registros básicos",
+    "url": "https://defunciones.registraduria.gov.co/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Registraduría — Estado de cédula",
+    "category": "Identidad y registros básicos",
+    "url": "https://certvigenciacedula.registraduria.gov.co/Datos.aspx",
+    "captcha": true,
+    "ctype": "image"
+  },
+  {
+    "name": "JCC — Junta Central de Contadores (Contadores Sancionados)",
+    "category": "Otros registros especializados",
+    "url": "https://www.jcc.gov.co/mis-tramites/certificado-digital",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "SIRNA — Registro Nacional de Abogados",
+    "category": "Otros registros especializados",
+    "url": "https://sirna.ramajudicial.gov.co/",
+    "captcha": true,
+    "ctype": "login"
+  },
+  {
+    "name": "CIDOB — Barcelona Centre for International Affairs (PEP mundial)",
+    "category": "PEP (Personas Expuestas Políticamente)",
+    "url": "https://www.cidob.org/bios",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "PEP Colombia — Consulta agregada",
+    "category": "PEP (Personas Expuestas Políticamente)",
+    "url": "https://www.funcionpublica.gov.co/web/sigep2/directorio",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "PEP Internacional — CIA World Leaders",
+    "category": "PEP (Personas Expuestas Políticamente)",
+    "url": "https://www.cia.gov/resources/world-leaders/",
+    "requires_captcha": false,
+    "method": "dataset_cache"
+  },
+  {
+    "name": "PEP Internacional — EveryPolitician (parlamentarios)",
+    "category": "PEP (Personas Expuestas Políticamente)",
+    "url": "https://www.opensanctions.org/datasets/everypolitician/",
+    "requires_captcha": false,
+    "method": "dataset_cache"
+  },
+  {
+    "name": "PEP Internacionales — Consulta agregada",
+    "category": "PEP (Personas Expuestas Políticamente)",
+    "url": "https://www.offshoreleaks.icij.org/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "SIGEP — Función Pública Colombia (browser)",
+    "category": "PEP (Personas Expuestas Políticamente)",
+    "url": "https://www.funcionpublica.gov.co/web/sigep2/directorio",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "DEA — Most Wanted Fugitives (detallado)",
+    "category": "Reputacional y noticias",
+    "url": "https://www.dea.gov/fugitives/all",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Insight Crime — Crimen Organizado",
+    "category": "Reputacional y noticias",
+    "url": "https://insightcrime.org/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Noticias — Búsqueda en medios (Google News)",
+    "category": "Reputacional y noticias",
+    "url": "https://news.google.com/",
+    "requires_captcha": false,
+    "method": "datos_abiertos"
+  },
+  {
+    "name": "Noticias — Fiscalía General (LAFT)",
+    "category": "Reputacional y noticias",
+    "url": "https://www.fiscalia.gov.co/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Noticias — Policía Nacional (LAFT)",
+    "category": "Reputacional y noticias",
+    "url": "https://www.policia.gov.co/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Noticias — Presidencia (LAFT)",
+    "category": "Reputacional y noticias",
+    "url": "https://www.presidencia.gov.co/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Noticias — Procuraduría General (LAFT)",
+    "category": "Reputacional y noticias",
+    "url": "https://www.procuraduria.gov.co/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "BIS — Denied Persons List (USA)",
+    "category": "Sanciones internacionales",
+    "url": "https://www.bis.gov/licensing/end-user-guidance/denied-persons-list-dpl",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Banco Mundial — Debarred Firms & Individuals",
+    "category": "Sanciones internacionales",
+    "url": "https://www.worldbank.org/en/projects-operations/procurement/debarred-firms",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "Canadá — SEMA / LMES Sanctions",
+    "category": "Sanciones internacionales",
+    "url": "https://www.international.gc.ca/world-monde/international_relations-relations_internationales/sanctions/consolidated-consolide.aspx?lang=eng",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "EEUU Depto. de Estado — Organizaciones Terroristas (FTO)",
+    "category": "Sanciones internacionales",
+    "url": "https://www.state.gov/foreign-terrorist-organizations/",
+    "requires_captcha": false,
+    "method": "bulk_cache"
+  },
+  {
+    "name": "EEUU — Consolidated Screening List (Entity/Unverified/AECA)",
+    "category": "Sanciones internacionales",
+    "url": "https://www.trade.gov/consolidated-screening-list",
+    "requires_captcha": false,
+    "method": "bulk_cache"
+  },
+  {
+    "name": "OFAC SDN — Specially Designated Nationals",
+    "category": "Sanciones internacionales",
+    "url": "https://sanctionssearch.ofac.treas.gov/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "OFAC — Direcciones y aliases (add.csv)",
+    "category": "Sanciones internacionales",
+    "url": "https://sanctionssearch.ofac.treas.gov/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "OFAC — Lista Consolidada (Non-SDN, FSE, SSI, CAPTA)",
+    "category": "Sanciones internacionales",
+    "url": "https://sanctionssearch.ofac.treas.gov/",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "ONU — UN Security Council Consolidated List",
+    "category": "Sanciones internacionales",
+    "url": "https://www.un.org/securitycouncil/content/un-sc-consolidated-list",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "UE — Lista Consolidada de Sanciones",
+    "category": "Sanciones internacionales",
+    "url": "https://data.europa.eu/data/datasets/consolidated-list-of-persons-groups-and-entities-subject-to-eu-financial-sanctions",
+    "captcha": false,
+    "ctype": null
+  },
+  {
+    "name": "UK HM Treasury — Consolidated Sanctions",
+    "category": "Sanciones internacionales",
+    "url": "https://search-uk-sanctions-list.service.gov.uk/",
+    "captcha": false,
+    "ctype": null
+  }
+]

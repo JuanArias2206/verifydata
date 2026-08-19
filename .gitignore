@@ -1,0 +1,74 @@
+# =====================================================================
+#  VerifyData / SARLAFT — .gitignore
+#  Mantiene fuera del repositorio: secretos, datos generados y binarios.
+#  NOTA: git NO admite comentarios al final de una línea de patrón; cada
+#  comentario debe ir en su propia línea (bug histórico corregido).
+# =====================================================================
+
+# --- SECRETOS (nunca subir) ---
+# config.yaml = copia local con claves reales (usar config.example.yaml)
+config.yaml
+# .env = variables de entorno con secretos reales
+.env
+.env.*
+!.env.example
+# env.txt = volcado local de variables de entorno (secretos)
+env.txt
+
+# --- Datos generados / cachés (se regeneran en runtime) ---
+# BD SQLite, listas descargadas, certificados, capturas, PII de pruebas.
+# Se ignora TODO el contenido de data/ pero se conserva la carpeta vacía
+# vía data/.gitkeep (usar data/* — no data/ — para poder re-incluir el keep).
+data/*
+!data/.gitkeep
+last_run.json
+*.db
+*.db-shm
+*.db-wal
+
+# --- Capturas y evidencias (pesadas, efímeras) ---
+screenshots/
+*.png.tmp
+
+# --- Datos de crédito de clientes (PII sensible) ---
+creditos_personas/
+
+# --- Prototipos de diseño (pesados, fuera del repo) ---
+cambios disenio/
+
+# --- Reportes generados ---
+sample_report.html
+sample_report.pdf
+report_*.pdf
+report.html
+presentacion_fuentes.html
+
+# --- Navegadores / Playwright ---
+browsers/
+playwright-report/
+test-results/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Entornos virtuales ---
+venv/
+.venv/
+env/
+
+# --- Editores / OS / herramientas ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.mavis/
+.opencode/

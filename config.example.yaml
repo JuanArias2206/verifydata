@@ -1,0 +1,98 @@
+# =====================================================================
+#  VerifyData — Plantilla de configuración
+#  Copie este archivo a `config.yaml` y ajuste los valores NO secretos.
+#      cp config.example.yaml config.yaml
+#
+#  Los SECRETOS (API keys) NO van aquí: se inyectan por variables de
+#  entorno o por un archivo `.env` (ver .env.example). El entorno tiene
+#  prioridad sobre este YAML. `config.yaml` está en .gitignore.
+# =====================================================================
+
+# --- HTTP genérico ---
+http:
+  user_agent: "VerifyData/1.0"
+  timeout: 30
+  max_retries: 2
+  backoff: 0.6
+
+# --- Database (ruta relativa = relativa al proyecto, no al CWD) ---
+database:
+  path: "data/verifydata.db"
+
+# --- Captcha solver ---
+# Las api_key se dejan VACÍAS: se cargan desde el entorno
+#   ANTHROPIC_API_KEY, CAPSOLVER_API_KEY, TWOCAPTCHA_API_KEY, WEBSHARE_API_KEY
+captcha:
+  solver: "chain"
+  order: ["capsolver", "twocaptcha"]
+  trivia:
+    enabled: true
+    anthropic_api_key: ""     # ← env ANTHROPIC_API_KEY
+    anthropic_model: "claude-haiku-4-5"
+  anthropic:
+    api_key: ""               # ← env ANTHROPIC_API_KEY
+    model: "claude-haiku-4-5"
+  capsolver:
+    api_key: ""               # ← env CAPSOLVER_API_KEY
+    api_url: "https://api.capsolver.com"
+    default_timeout: 180
+  twocaptcha:
+    api_key: ""               # ← env TWOCAPTCHA_API_KEY
+    api_url: "https://2captcha.com"
+    default_timeout: 180
+    proxy:
+      enabled: true
+      webshare_api_key: ""    # ← env WEBSHARE_API_KEY
+  anticaptcha:
+    api_key: ""               # ← env ANTICAPTCHA_API_KEY
+    api_url: "https://api.anti-captcha.com"
+    default_timeout: 120
+
+# --- Browser pool (Playwright) ---
+browser:
+  headless: true
+  max_pages: 6
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16 Safari/605.1.15"
+
+# --- Listas bulk (cache local SQLite). TTL en días. ---
+lists:
+  ofac_sdn: { ttl_days: 7,    enabled: true }
+  un_consolidated: { ttl_days: 7, enabled: true }
+  eu_consolidated: { ttl_days: 14, enabled: true }
+  bis_dpl: { ttl_days: 30, enabled: true }
+  worldbank_ineligible: { ttl_days: 30, enabled: true }
+  icij_panama: { ttl_days: 30, enabled: false }
+  icij_paradise: { ttl_days: 30, enabled: false }
+  icij_offshore: { ttl_days: 30, enabled: false }
+  icij_pandora: { ttl_days: 30, enabled: false }
+  icij_bahamas: { ttl_days: 30, enabled: false }
+
+# --- Webapp ---
+# En despliegue, HOST=0.0.0.0 y PORT se suelen fijar por entorno.
+webapp:
+  host: "127.0.0.1"
+  port: 5070
+  debug: false
+  results_cache_size: 100
+
+# --- API REST pública (/api/v1) ---
+# Docs: /api/v1/docs · Referencia: API.md
+api:
+  enabled: true
+  # Claves de la API. Vacío = ABIERTA (solo dev). En prod, defínalas por
+  # entorno VERIFYDATA_API_KEYS="clave1,clave2" o aquí (config.yaml git-ignored).
+  keys: []
+  sync_timeout: 240
+  sync_poll_interval: 1.0
+  cors_origins: "*"
+
+# --- Retención de datos efímeros (evita llenar el disco en producción) ---
+# Elimina capturas/certificados más antiguos que N horas. 0 = desactivar.
+# También configurable por entorno VERIFYDATA_RETENTION_HOURS.
+data:
+  retention_hours: 72
+  retention_sweep_minutes: 60
+
+# --- Logging ---
+logging:
+  level: "INFO"

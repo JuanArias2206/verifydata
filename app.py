@@ -1,0 +1,2340 @@
+#!/usr/bin/env python3
+"""
+app.py — Flask webapp para VerifyData Demo.
+
+Usa el nuevo sistema de registry:
+  - Las fuentes se registran con @register (sources/*.py)
+  - Captcha solver se inyecta vía solvers
+  - Bulk lists se cachean en SQLite vía lists/manager.py
+  - Config se lee de config.yaml
+
+Uso:
+  PORT=5070 python3 app.py
+  → http://localhost:5070
+"""
+from __future__ import annotations
+import os
+import re
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, request, render_template_string, redirect, url_for, send_file, abort
+
+# --- Cargar config primero ---
+from config import load_config
+CFG = load_config()
+
+# --- Logging estructurado + auditoría (A8) --------------------------------
+from logging_config import setup_logging, get_logger, audit
+setup_logging(CFG.get("logging", {}).get("level"))
+log = get_logger("verifydata.app")
+
+# --- Inicializar registry y solver ---
+from sources import registry, Hit
+from solvers import get_default_solver
+SOLVER = get_default_solver()
+
+# --- Sistema de diseño compartido "VerifyData" ---
+import ui_theme
+
+# --- DB ---
+# La ruta viene de config ya resuelta a absoluta relativa al proyecto (ver
+# config._resolve_paths). set_db_path la fija para init_db() y get_db().
+from db import init_db, set_db_path
+DB_PATH = Path(CFG["database"]["path"])
+set_db_path(DB_PATH)
+init_db(DB_PATH)
+
+app = Flask(__name__)
+app.config["RESULTS_CACHE_SIZE"] = CFG["webapp"].get("results_cache_size", 100)
+
+# --- Clave para firmar sesiones/cookies de Flask ---------------------------
+# Viene de SESSION_SECRET (.env). En dev se genera una efímera para no romper,
+# pero eso invalida las sesiones en cada reinicio: define SESSION_SECRET.
+import os as _os
+_session_secret = _os.environ.get("SESSION_SECRET")
+if not _session_secret:
+    import secrets as _secrets
+    _session_secret = _secrets.token_hex(32)
+    log.warning("SESSION_SECRET no definido: usando clave efímera (define "
+                "SESSION_SECRET en .env para persistir sesiones).")
+app.secret_key = _session_secret
+
+DATA = Path(__file__).parent / "data"
+RESULTS_CACHE: dict[str, dict] = {}
+
+# --- Higiene del directorio de datos (deploy/producción) -------------------
+# Crea las carpetas que las fuentes esperan y arranca la limpieza periódica de
+# capturas/certificados antiguos para no llenar el disco. Ver maintenance.py.
+from maintenance import ensure_data_dirs, start_retention_janitor
+ensure_data_dirs(DATA)
+_data_cfg = CFG.get("data", {})
+start_retention_janitor(
+    DATA,
+    retention_hours=_data_cfg.get("retention_hours", 72),
+    sweep_minutes=_data_cfg.get("retention_sweep_minutes", 60),
+    # Retención de auditoría (A8): 0 = nunca purgar (default AML). SARLAFT suele
+    # exigir años; se configura con VERIFYDATA_AUDIT_RETENTION_DAYS.
+    audit_retention_days=CFG.get("logging", {}).get("audit_retention_days", 0))
+
+# --- API REST pública (/api/v1) --------------------------------------------
+# Se monta como Blueprint independiente; no altera la UI HTML de esta app.
+# Documentación interactiva en /api/v1/docs. Ver api.py y API.md.
+from api import register_api
+register_api(app, CFG, SOLVER, DATA)
+
+# --- Autenticación (login OTP + Microsoft SSO + RBAC) -----------------------
+# Ver auth.py. Regla: solo usuarios en la tabla `users` (activo=1) pueden
+# entrar. La API REST (/api/v1) mantiene su propia auth por API-key.
+from flask import g
+import auth as _auth
+app.register_blueprint(_auth.auth_bp)
+
+
+@app.before_request
+def _require_authentication():
+    """Exige sesión para toda la UI HTML y los endpoints AJAX (/api/…),
+    excepto rutas públicas (login, callback SSO, /api/v1, estáticos).
+    Por defecto en la demo, la autenticación está desactivada
+    (LOGIN_DISABLED=1). Para entornos reales, define LOGIN_DISABLED=0 y
+    configura SMTP/Microsoft SSO."""
+    if not os.environ.get("LOGIN_DISABLED"):
+        os.environ["LOGIN_DISABLED"] = "1"
+    if os.environ.get("LOGIN_DISABLED", "").lower() in ("1", "true", "yes", "si"):
+        from flask import g
+        g.user = {"email": "demo@verifydata.local",
+                  "rol": "admin", "nombre": "Demo"}
+        return
+    _auth.load_logged_in_user()  # fija g.user (dict | None)
+    if _auth.is_public_path(request.path):
+        return
+    if g.user is None:
+        if request.path.startswith("/api/"):
+            from flask import jsonify
+            return jsonify(ok=False, error="No autenticado"), 401
+        from flask import redirect, url_for
+        return redirect(url_for("auth.login", next=request.path))
+
+
+@app.context_processor
+def _inject_current_user():
+    """Expone `current_user` a todas las plantillas (para header/menú)."""
+    return {"current_user": g.get("user")}
+
+
+def _audit_user() -> str:
+    """Email del usuario en sesión (para auditoría), o 'anon' si no hay."""
+    u = g.get("user")
+    return (u or {}).get("email", "anon") if isinstance(u, dict) else "anon"
+
+
+# Content-Security-Policy. Nota: la UI y Swagger usan mucho CSS/JS inline
+# (Bloque C: migrar a templates/ y endurecer), por eso se permite
+# 'unsafe-inline' de momento. unpkg sirve el bundle de Swagger en /api/v1/docs.
+_CSP = "; ".join([
+    "default-src 'self'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "img-src 'self' data: https:",
+    "style-src 'self' 'unsafe-inline' https://unpkg.com",
+    "script-src 'self' 'unsafe-inline' https://unpkg.com",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+])
+
+
+@app.after_request
+def _security_headers(resp):
+    """Cabeceras de seguridad HTTP en TODAS las respuestas (A4)."""
+    resp.headers.setdefault("Content-Security-Policy", _CSP)
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    # HSTS solo bajo HTTPS (detrás de un proxy TLS, vía X-Forwarded-Proto).
+    proto = request.headers.get("X-Forwarded-Proto", "")
+    if request.is_secure or proto.split(",")[0].strip() == "https":
+        resp.headers.setdefault(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains")
+    return resp
+
+
+# ==============================================================
+#  HTML Template (form)
+# ==============================================================
+TEMPLATE = ui_theme.head_open("VerifyData — Búsqueda automatizada") + \
+    ui_theme.shell_open("busqueda", "Búsqueda automatizada",
+                        "Elige una ruta de verificación") + """
+  <div class="hero-row">
+    <div class="menu-hero">
+      <p class="eyebrow">Búsqueda automatizada</p>
+      <h2>Verifica personas y empresas en segundos</h2>
+      <p>Consulta <b style="color:var(--text)">{{ total_sources }} fuentes públicas</b>
+         en paralelo — identidad, listas restrictivas, antecedentes, contratación
+         y noticias. Elige buscar por <b style="color:var(--text)">persona</b>
+         (cédula/nombre) o por <b style="color:var(--text)">empresa</b> (NIT).</p>
+    </div>
+    <div class="hero-logo-big">
+      <div class="wordmark wm-light wm-hero">Verify<span>Data</span></div>
+    </div>
+  </div>
+
+  <div class="seg" style="margin-bottom:20px">
+    <button type="button" id="tab-persona" class="active">Persona</button>
+    <button type="button" id="tab-nit">Empresa (NIT)</button>
+  </div>
+
+  <div class="form-shell">
+    <form class="card pad" method="post" action="/" id="search-form">
+      <input type="hidden" name="mode" id="f-mode" value="persona">
+
+      <div id="grid-persona">
+        <div class="form-section">
+          <h4>Datos de la persona</h4>
+          <div class="field-row">
+            <div class="field full">
+              <label>Nombre completo</label>
+              <input name="nombre" id="f-nombre" placeholder="Ej: Juan Camilo Pérez Gómez"
+                     value="" autofocus autocomplete="off">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Cédula / Documento</label>
+              <input name="cedula" id="f-cedula" placeholder="Ej: 1234567890"
+                     value="" inputmode="numeric" autocomplete="off">
+            </div>
+            <div class="field">
+              <label>Fecha de expedición</label>
+              <input name="fecha_exp" id="f-fecha" placeholder="dd/mm/aaaa"
+                     value="" autocomplete="off">
+            </div>
+          </div>
+        </div>
+        <div class="form-footer">
+          <a class="btn btn-ghost" href="/nueva" id="clear-btn">Limpiar</a>
+          <button type="submit" class="btn btn-primary">Iniciar verificación</button>
+        </div>
+      </div>
+
+      <div id="grid-nit" style="display:none">
+        <div class="form-section">
+          <h4>Datos de la empresa</h4>
+          <div class="field-row">
+            <div class="field full">
+              <label>NIT de la empresa</label>
+              <input name="nit" id="f-nit"
+                     placeholder="Ej: 900123456 (sin dígito de verificación)"
+                     value="" inputmode="numeric" autocomplete="off">
+            </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <h4>Tipo de reporte</h4>
+          <div id="nit-mode-opts">
+            <label class="radio-opt sel">
+              <input type="radio" name="nit_mode" value="empresa" checked>
+              <span><span class="t">Información de la empresa</span>
+                <span class="d">Consulta a la compañía (razón social + NIT) en
+                  sanciones, listas, contratación, judicial, boletines, PEP y
+                  noticias.</span></span>
+            </label>
+            <label class="radio-opt">
+              <input type="radio" name="nit_mode" value="reps">
+              <span><span class="t">Representantes legales</span>
+                <span class="d">Extrae los representantes legales de RUES y corre la
+                  búsqueda por persona a cada uno.</span></span>
+            </label>
+            <label class="radio-opt">
+              <input type="radio" name="nit_mode" value="ambas">
+              <span><span class="t">Ambas</span>
+                <span class="d">Reporte de la empresa + búsqueda de cada representante
+                  legal.</span></span>
+            </label>
+          </div>
+        </div>
+        <div class="form-footer">
+          <a class="btn btn-ghost" href="/nueva">Limpiar</a>
+          <button type="submit" class="btn btn-primary">Iniciar verificación</button>
+        </div>
+      </div>
+    </form>
+
+    <aside class="card pad side-help">
+      <h4>Cómo funciona</h4>
+      <p>Cada verificación consulta las fuentes en paralelo y documenta la evidencia
+         de cada resultado.</p>
+      <div class="step-mini"><span class="n on">1</span><span class="tx">Ingresa los
+        datos del sujeto o el NIT de la empresa.</span></div>
+      <div class="step-mini"><span class="n on">2</span><span class="tx">El sistema
+        consulta {{ total_sources }} fuentes y resuelve captchas automáticamente.</span></div>
+      <div class="step-mini"><span class="n on">3</span><span class="tx">Revisa el
+        reporte en pantalla y descarga el PDF con evidencia.</span></div>
+      <p style="margin-top:16px"><span class="badge b-violeta"><span class="badge-dot"></span>
+        Solver: {{ solver_name }}</span></p>
+    </aside>
+  </div>
+
+  {{ body | safe }}
+
+<script>
+(function(){
+  var tp=document.getElementById('tab-persona'), tn=document.getElementById('tab-nit');
+  var gp=document.getElementById('grid-persona'), gn=document.getElementById('grid-nit');
+  var mode=document.getElementById('f-mode');
+  function toPersona(){mode.value='persona';gp.style.display='';gn.style.display='none';
+    tp.classList.add('active');tn.classList.remove('active');
+    var f=document.getElementById('f-nombre');if(f)f.focus();}
+  function toNit(){mode.value='nit';gp.style.display='none';gn.style.display='';
+    tn.classList.add('active');tp.classList.remove('active');
+    var f=document.getElementById('f-nit');if(f)f.focus();}
+  tp.addEventListener('click',toPersona);
+  tn.addEventListener('click',toNit);
+  // Preselección por ?tab= (nav del sidebar)
+  try{var t=new URLSearchParams(location.search).get('tab');
+      if(t==='empresa'||t==='nit')toNit();}catch(e){}
+})();
+(function(){
+  var opts=document.querySelectorAll('.nit-mode-opt, #nit-mode-opts .radio-opt');
+  function sync(){opts.forEach(function(o){var r=o.querySelector('input[type=radio]');
+    o.classList.toggle('sel',!!(r&&r.checked));});}
+  opts.forEach(function(o){var r=o.querySelector('input[type=radio]');
+    if(r)r.addEventListener('change',sync);});
+  sync();
+})();
+document.getElementById('search-form').addEventListener('submit',function(){
+  setTimeout(function(){
+    ['f-nombre','f-cedula','f-fecha','f-nit'].forEach(function(id){
+      var el=document.getElementById(id); if(el) el.value='';});
+  },0);
+});
+var _cb=document.getElementById('clear-btn');
+if(_cb) _cb.addEventListener('click',function(e){
+  e.preventDefault();
+  ['f-nombre','f-cedula','f-fecha'].forEach(function(id){
+    var el=document.getElementById(id); if(el) el.value='';});
+  document.getElementById('f-nombre').focus();
+});
+</script>
+""" + ui_theme.SHELL_CLOSE
+
+
+# ==============================================================
+#  HTML Template (results page — magazine-style matching the PDF)
+# ==============================================================
+TEMPLATE_RESULTS = ui_theme.head_open("VerifyData — Resultado de verificación") + \
+    ui_theme.shell_open("persona", "Resultado de verificación",
+                        "Verificación · Reporte generado") + """
+  {% if query['__nit_token'] %}
+  <a class="btn btn-secondary btn-sm" href="/nit/{{ query['__nit_token'] }}"
+     style="margin-bottom:16px">&larr; Volver a la empresa{% if query['__empresa'] %} · {{ query['__empresa'] }}{% endif %}</a>
+  {% endif %}
+
+  <div class="card res-header">
+    <div class="who">
+      <div class="wordmark wm-light wm-sm">Verify<span>Data</span></div>
+      {% if query['__empresa_mode'] %}
+      <p class="kicker" style="margin-bottom:4px">Reporte de verificación · Empresa</p>
+      <h3>{{ query.razon_social or query.nombre or '—' }}</h3>
+      <div class="meta">
+        {% if query.cedula %}<span>NIT <b style="color:var(--text)">{{ query.cedula }}</b></span>{% endif %}
+        <span id="status-text">Iniciando búsqueda…</span>
+      </div>
+      {% else %}
+      <p class="kicker" style="margin-bottom:4px">Reporte de verificación · Persona natural</p>
+      <h3>{{ query.nombre or query.cedula or 'Consulta' }}</h3>
+      <div class="meta">
+        {% if query.cedula %}<span>CC <b style="color:var(--text)">{{ query.cedula }}</b></span>{% endif %}
+        {% if query.fecha_exp %}<span>Exp. {{ query.fecha_exp }}</span>{% endif %}
+        <span id="status-text">Iniciando búsqueda…</span>
+      </div>
+      {% endif %}
+    </div>
+    <div class="acts">
+      <a class="btn btn-secondary" href="/nueva">Nueva búsqueda</a>
+      <a class="btn btn-primary" id="pdf-btn" href="/download/pdf/{{ token }}" target="_blank">Descargar PDF</a>
+    </div>
+  </div>
+
+  <!-- ======== SECCIÓN RIESGO CREDITICIO (NUEVO) ======== -->
+  <div class="card pad" id="credit-risk-sec" style="margin-bottom:20px;display:none">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:space-between">
+      <div>
+        <div class="section-title" style="margin:0">Perfil crediticio · VerifyData Risk</div>
+        <p class="section-sub" style="margin:4px 0 0">Análisis combinado: RSales API + Excel BITACORA + Datacrédito</p>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <span id="cr-rsales-badge" style="display:none;font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;background:rgba(62,122,249,.12);color:#1d4ed8">RSales</span>
+        <span id="cr-excel-badge" style="font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;background:rgba(105,65,244,.12);color:#5b21b6">Excel</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:16px">
+      <div class="card" style="text-align:center;padding:18px 14px">
+        <div id="cr-score" style="font-size:42px;font-weight:800;color:var(--text)">—</div>
+        <div style="font-size:12px;color:var(--text-faint);font-weight:600">SCORE / 1000</div>
+        <div id="cr-score-bar" style="height:6px;background:#f1f0f6;border-radius:3px;margin-top:10px;overflow:hidden"><i style="display:block;height:100%;background:var(--grad-btn);width:0%;border-radius:3px;transition:width .5s"></i></div>
+      </div>
+      <div class="card" style="text-align:center;padding:18px 14px">
+        <div id="cr-level" style="font-size:20px;font-weight:800;color:var(--text)">—</div>
+        <div style="font-size:12px;color:var(--text-faint);font-weight:600">NIVEL DE RIESGO</div>
+        <div id="cr-recommendation" style="font-size:13px;font-weight:600;margin-top:8px;color:var(--text-dim)">Consultando…</div>
+      </div>
+      <div class="card" style="text-align:center;padding:18px 14px">
+        <div id="cr-monto" style="font-size:20px;font-weight:800;color:var(--text)">—</div>
+        <div style="font-size:12px;color:var(--text-faint);font-weight:600">MONTO MÁX. RECOMENDADO</div>
+        <div id="cr-alertas" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <div id="cr-detail" style="margin-top:12px;display:none">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Factores positivos</div>
+          <div id="cr-positivos" style="font-size:12px;color:#15803d"></div>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Factores negativos / Alertas</div>
+          <div id="cr-negativos" style="font-size:12px;color:#b91c1c"></div>
+        </div>
+      </div>
+      <div id="cr-rsales-detail" style="display:none;margin-top:12px">
+        <div style="font-size:11px;font-weight:700;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Datos RSales</div>
+        <div id="cr-rsales-data" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:12px;color:var(--text)"></div>
+      </div>
+    </div>
+  </div>
+  <!-- ======== FIN SECCIÓN CREDITICIA ======== -->
+
+  <div class="res-kpis" style="grid-template-columns:repeat(6,1fr)">
+    <div class="card res-kpi"><div class="v" id="st-total">{{ total_sources }}</div><div class="l">Fuentes</div></div>
+    <div class="card res-kpi"><div class="v" id="st-match">0</div><div class="l">Coincidencias</div></div>
+    <div class="card res-kpi"><div class="v" id="st-notice">0</div><div class="l">Avisos</div></div>
+    <div class="card res-kpi"><div class="v" id="st-captcha">0</div><div class="l">Verificar</div></div>
+    <div class="card res-kpi"><div class="v" id="st-error">0</div><div class="l">Errores</div></div>
+    <div class="card res-kpi"><div class="v" id="st-records">0</div><div class="l">Registros</div></div>
+  </div>
+
+  <div class="card pad" id="featured-sec" style="display:none;margin-bottom:20px">
+    <div class="section-title" id="featured-h">Fuentes principales</div>
+    <p class="section-sub">Fuentes de mayor peso para la decisión de cumplimiento, con su resultado y evidencia verificable.</p>
+    <div id="featured"></div>
+  </div>
+
+  <div class="card pad" id="others-sec" style="display:none;margin-bottom:20px">
+    <div class="section-title" id="others-h">Información general</div>
+    <p class="section-sub">Cobertura complementaria — sanciones, contratación, PEP, reputación y fugitivos.</p>
+    <div class="filter-row" style="margin-bottom:16px">
+      <span class="badge b-azul"><span class="badge-dot"></span>Con dato</span>
+      <span class="badge b-verde"><span class="badge-dot"></span>Sin coincidencia</span>
+      <span class="badge b-amber"><span class="badge-dot"></span>Consulta manual / verificar</span>
+      <span class="badge b-rojo"><span class="badge-dot"></span>Error</span>
+    </div>
+    <div id="others"></div>
+  </div>
+
+  <div class="card pad" id="progress" style="display:flex;align-items:center;gap:12px;color:var(--text-dim);font-size:13px">
+    <span class="spin"></span> Búsqueda en progreso. Las fuentes se mostrarán conforme terminen.
+  </div>
+
+<script>
+(function() {
+  var token = {{ token|tojson }};
+  var catMap = {{ cat_map|safe }};
+  var rendered = {};
+  var cedula = {{ query.get('cedula','')|tojson }};  // para credit check
+
+  // ── Credit Risk ────────────────────────────────────────
+  var CR_COLORS = {'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
+  function renderCreditRisk(d) {
+    if (!d.ok || !d.profile) return;
+    var p = d.profile;
+    var scEl = document.getElementById('cr-score');
+    var bar = document.getElementById('cr-score-bar').querySelector('i');
+    var levelEl = document.getElementById('cr-level');
+    var recEl = document.getElementById('cr-recommendation');
+    var montoEl = document.getElementById('cr-monto');
+    var alertasEl = document.getElementById('cr-alertas');
+    var posEl = document.getElementById('cr-positivos');
+    var negEl = document.getElementById('cr-negativos');
+    var detEl = document.getElementById('cr-detail');
+
+    scEl.textContent = p.score;
+    scEl.style.color = CR_COLORS[p.nivel_riesgo] || '#333';
+    bar.style.width = (p.score / 10) + '%';
+    bar.style.background = CR_COLORS[p.nivel_riesgo] || 'var(--grad-btn)';
+    levelEl.textContent = p.nivel_riesgo;
+    levelEl.style.color = CR_COLORS[p.nivel_riesgo] || '#333';
+    recEl.textContent = p.recomendacion;
+    montoEl.textContent = p.monto_maximo_recomendado > 0 ? ('\$' + p.monto_maximo_recomendado.toLocaleString('es-CO')) : '—';
+
+    if (p.alertas && p.alertas.length) {
+      alertasEl.innerHTML = p.alertas.slice(0,3).map(function(a){return '<div style=\"font-size:11px;color:#b91c1c;font-weight:600;margin-top:2px\">⚠ '+esc(a)+'</div>';}).join('');
+    }
+
+    if (p.fuentes && p.fuentes.rsales) document.getElementById('cr-rsales-badge').style.display = 'inline-block';
+    if (p.fuentes && p.fuentes.excel) document.getElementById('cr-excel-badge').style.display = 'inline-block';
+
+    detEl.style.display = '';
+    if (p.factores_positivos && p.factores_positivos.length) {
+      posEl.innerHTML = p.factores_positivos.map(function(f){return '<div style=\"margin:3px 0\">✓ '+esc(f)+'</div>';}).join('');
+    } else { posEl.innerHTML = '<span style=\"color:var(--text-faint)\">Ninguno detectado</span>'; }
+    if (p.factores_negativos && p.factores_negativos.length) {
+      negEl.innerHTML = p.factores_negativos.map(function(f){return '<div style=\"margin:3px 0\">✗ '+esc(f)+'</div>';}).join('');
+    } else { negEl.innerHTML = '<span style=\"color:var(--text-faint)\">Ninguno detectado</span>'; }
+
+    // RSales detail
+    var rd = p.detalle && p.detalle.rsales;
+    if (rd) {
+      document.getElementById('cr-rsales-detail').style.display = '';
+      document.getElementById('cr-rsales-data').innerHTML =
+        '<div><b>Cartera total</b><br>\$'+(rd.cartera_total||0).toLocaleString('es-CO')+'</div>' +
+        '<div><b>Cartera vencida</b><br>\$'+(rd.cartera_vencida||0).toLocaleString('es-CO')+' ('+(rd.pct_vencida||0).toFixed(0)+'%)</div>' +
+        '<div><b>Compras RSales</b><br>\$'+(rd.compras_total||0).toLocaleString('es-CO')+'</div>' +
+        '<div><b>Pedidos</b><br>'+(rd.num_pedidos||0)+' · Últ: '+(rd.ultima_compra||'N/A').slice(0,10)+'</div>';
+    }
+
+    // Cotejo
+    if (p.cotejo && p.cotejo.nota) {
+      var cd = document.createElement('div');
+      cd.style.cssText = 'margin-top:10px;font-size:12px;padding:8px 12px;border-radius:8px;';
+      cd.style.background = p.cotejo.compras_ok ? 'rgba(21,128,61,.08)' : 'rgba(220,38,38,.08)';
+      cd.style.color = p.cotejo.compras_ok ? '#15803d' : '#b91c1c';
+      cd.style.fontWeight = '600';
+      cd.textContent = '📊 Cotejo: ' + p.cotejo.nota;
+      document.getElementById('cr-rsales-detail').appendChild(cd);
+    }
+
+    // Botón RSales si no están cargados aún
+    if (!p.fuentes.rsales) {
+      var btnRow = document.createElement('div');
+      btnRow.style.cssText = 'margin-top:10px;text-align:center';
+      btnRow.innerHTML = '<a class=\"btn btn-secondary btn-sm\" href=\"#\" id=\"cr-load-rsales\" onclick=\"return!1\">🔍 Cargar datos RSales (cartera, compras, cotejo)</a>';
+      document.getElementById('cr-rsales-detail').style.display = '';
+      document.getElementById('cr-rsales-detail').appendChild(btnRow);
+      document.getElementById('cr-load-rsales').addEventListener('click', function(e){
+        e.preventDefault();
+        this.textContent = 'Cargando RSales…';
+        this.style.pointerEvents = 'none';
+        fetch('/api/credit/profile/' + encodeURIComponent(cedula) + '?rsales=1')
+          .then(function(r){return r.json();})
+          .then(function(d2){ renderCreditRisk(d2); })
+          .catch(function(){}); 
+      });
+    }
+  }
+
+  function fetchCreditRisk() {
+    if (!cedula) return;
+    document.getElementById('credit-risk-sec').style.display = '';
+    // Primero cargar rápido (solo Excel), luego opción de RSales
+    fetch('/api/credit/profile/' + encodeURIComponent(cedula))
+      .then(function(r){return r.json();})
+      .then(function(d){ renderCreditRisk(d); })
+      .catch(function(e){ console.error('Credit risk fetch:', e); });
+  }
+  fetchCreditRisk();
+  // ── End Credit Risk ────────────────────────────────────
+
+  var CAT_ORDER = [
+    'Sanciones internacionales','Contratación pública','Empresas y sociedades',
+    'Antecedentes judiciales','Crimen y fugitivos','Corrupción internacional',
+    'PEP (Personas Expuestas Políticamente)','Reputacional y noticias',
+    'Otros registros especializados',
+    'Identidad y registros básicos','Antecedentes disciplinarios'
+  ];
+
+  function statusKey(h) {
+    if (h.error) return 'error';
+    if (h.matched) return 'match';
+    if (h.captcha_required) return 'captcha';
+    if (h.notice) return 'notice';
+    return 'nomatch';
+  }
+  var PILL = {match:'Con dato', nomatch:'Sin coincidencia', notice:'Consulta manual',
+              captcha:'Verificar', error:'Error'};
+  var BADGE = {match:'b-azul', nomatch:'b-verde', notice:'b-amber',
+               captcha:'b-amber', error:'b-rojo'};
+
+  function esc(s) {
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function badge(k) {
+    return '<span class="badge ' + BADGE[k] + '"><span class="badge-dot"></span>' + PILL[k] + '</span>';
+  }
+  function host(url){ try { return url.split('/').slice(0,3).join('/'); } catch(e){ return url; } }
+  function isFeatured(name, h) { return !!(h && h.is_principal); }
+
+  function renderFeatured(name, h) {
+    var k = statusKey(h);
+    var url = h.source_url || (h.evidence_urls && h.evidence_urls[0]) || '#';
+    var summary = h.summary || '';
+
+    var img = '';
+    var evImg = h.evidence_img;
+    if (evImg) {
+      var dlHref = h.download_url ? h.download_url : evImg;
+      img = '<div class="fimg"><a href="/download/' + esc(dlHref) + '" target="_blank" rel="noopener">'
+          + '<img src="/download/' + esc(evImg) + '" alt="evidencia" loading="lazy"></a></div>';
+    } else if (h.download_url) {
+      var isPdf = h.download_url.toLowerCase().endsWith('.pdf');
+      img = '<p style="margin:6px 0 0"><a class="btn btn-secondary btn-sm" href="/download/'
+          + esc(h.download_url) + '" target="_blank">' + (isPdf ? 'Ver / Descargar PDF' : 'Descargar evidencia') + '</a></p>';
+    }
+
+    var body = '';
+    if (h.clean_rows && h.clean_rows.length) {
+      var kv = h.clean_rows.map(function(r) {
+        return '<tr><td class="name" style="width:38%">' + esc(r[0]) + '</td><td>'
+             + esc(String(r[1]).slice(0,240)) + '</td></tr>';
+      }).join('');
+      body = '<table class="dtable" style="margin-top:6px"><tbody>' + kv + '</tbody></table>';
+    } else if (h.details && h.details.length) {
+      body = h.details.slice(0, 5).map(function(d) {
+        var kv2 = Object.keys(d).map(function(key) {
+          return '<tr><td class="name" style="width:38%">' + esc(key) + '</td><td>'
+               + esc(String(d[key]).slice(0,240)) + '</td></tr>';
+        }).join('');
+        return '<table class="dtable" style="margin-top:6px"><tbody>' + kv2 + '</tbody></table>';
+      }).join('');
+    } else if (h.notice) {
+      body = '<p class="fsum">' + esc(h.notice) + '</p>';
+    } else if (h.error) {
+      body = '<p class="fsum" style="color:#b91c1c">' + esc(h.error) + '</p>';
+    } else if (summary) {
+      body = '<p class="fsum">' + esc(summary) + '</p>';
+    }
+
+    return '<div class="featured-card" data-source="' + esc(name) + '">' +
+      '<div class="fhead"><h3>' + esc(name) + '</h3>' + badge(k) + '</div>' +
+      '<div class="fmeta"><a href="' + esc(url) + '" target="_blank" rel="noopener" style="color:var(--violet);text-decoration:none">'
+        + esc(host(url)) + '</a> &middot; ' + (h.elapsed_s || 0).toFixed(1) + 's</div>' +
+      body + img +
+    '</div>';
+  }
+
+  function renderOther(name, h) {
+    var k = statusKey(h);
+    var url = h.source_url || (h.evidence_urls && h.evidence_urls[0]) || '#';
+    var note = '';
+    if (h.matched && h.summary) note = h.summary;
+    else if (h.error) note = h.error;
+    else if (h.notice) note = h.notice;
+    else if (h.summary) note = h.summary;
+    else note = 'Sin coincidencias.';
+    return '<div class="ochip">' +
+      '<div style="min-width:0">' +
+        '<div class="on" title="' + esc(name) + '">' + esc(name) + '</div>' +
+        '<div class="os" title="' + esc(note) + '" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px">' + esc(note) + '</div>' +
+      '</div>' + badge(k) +
+    '</div>';
+  }
+
+  function renderOthersGrouped(sources) {
+    var groups = {};
+    Object.keys(sources).forEach(function(n) {
+      if (isFeatured(n, sources[n])) return;
+      var cat = catMap[n] || 'Otras';
+      (groups[cat] = groups[cat] || []).push(n);
+    });
+    var cats = Object.keys(groups).sort(function(a,b){
+      var ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b);
+      if (ia < 0) ia = 99; if (ib < 0) ib = 99;
+      return ia - ib || a.localeCompare(b);
+    });
+    var html = '';
+    cats.forEach(function(cat) {
+      var names = groups[cat].sort();
+      var chips = names.map(function(n){ return renderOther(n, sources[n]); }).join('');
+      html += '<div class="cat-group">' +
+        '<div class="cat-h"><span class="dot"></span>' + esc(cat) +
+          ' <span style="color:var(--text-faint);font-weight:600">· ' + names.length + '</span></div>' +
+        '<div class="src-grid">' + chips + '</div>' +
+      '</div>';
+    });
+    return html;
+  }
+
+  function poll() {
+    fetch('/api/run/' + token).then(function(r) { return r.json(); })
+    .then(function(s) {
+      if (s.error) {
+        document.getElementById('status-text').textContent = 'Run no encontrado.';
+        return;
+      }
+      var done = Object.keys(s.sources || {}).length;
+      var m = s.matched||0, c = s.captcha||0, e = s.error||0;
+      var nt = 0;
+      for (var n in s.sources) {
+        var h = s.sources[n];
+        if (h.notice && !h.error && !h.matched && !h.captcha_required) nt++;
+      }
+      var recs = 0;
+      for (var n2 in s.sources) recs += (s.sources[n2].details || []).length;
+      document.getElementById('st-match').textContent = m;
+      document.getElementById('st-captcha').textContent = c;
+      document.getElementById('st-notice').textContent = nt;
+      document.getElementById('st-error').textContent = e;
+      document.getElementById('st-records').textContent = recs;
+      document.getElementById('status-text').textContent =
+        s.completed ? '✓ Completado (' + done + '/' + s.total + ')' :
+                      '⏳ Buscando… ' + done + '/' + s.total;
+
+      var names = Object.keys(s.sources);
+      var newOnes = names.filter(function(n) { return !rendered[n]; });
+      var anyFeatured = false, anyOther = false;
+      for (var n3 in s.sources) {
+        if (isFeatured(n3, s.sources[n3])) anyFeatured = true; else anyOther = true;
+      }
+      if (anyFeatured) document.getElementById('featured-sec').style.display = '';
+      if (anyOther) document.getElementById('others-sec').style.display = '';
+
+      if (s.completed && !rendered.__finalized) {
+        rendered.__finalized = true;
+        rendered = {};
+        document.getElementById('featured').innerHTML = '';
+        var featNames = Object.keys(s.sources).filter(function(n) {
+          return isFeatured(n, s.sources[n]);
+        }).sort(function(a, b) {
+          var oa = s.sources[a].principal_order; if (oa == null) oa = 999;
+          var ob = s.sources[b].principal_order; if (ob == null) ob = 999;
+          return oa - ob;
+        });
+        Object.keys(s.sources).forEach(function(n) { rendered[n] = s.sources[n]; });
+        featNames.forEach(function(n) {
+          document.getElementById('featured')
+            .insertAdjacentHTML('beforeend', renderFeatured(n, s.sources[n]));
+        });
+        document.getElementById('others').innerHTML = renderOthersGrouped(s.sources);
+        var prog = document.getElementById('progress'); if (prog) prog.style.display = 'none';
+        var pdf = document.getElementById('pdf-btn');
+        if (pdf) pdf.textContent = 'Descargar PDF (listo)';
+        return;
+      }
+
+      var othersChanged = false;
+      newOnes.forEach(function(n) {
+        rendered[n] = s.sources[n];
+        var h = s.sources[n];
+        if (isFeatured(n, h)) {
+          document.getElementById('featured')
+            .insertAdjacentHTML('beforeend', renderFeatured(n, h));
+        } else { othersChanged = true; }
+      });
+      if (othersChanged) {
+        document.getElementById('others').innerHTML = renderOthersGrouped(s.sources);
+      }
+      if (s.completed) {
+        var prog2 = document.getElementById('progress'); if (prog2) prog2.style.display = 'none';
+        var pdf2 = document.getElementById('pdf-btn');
+        if (pdf2) pdf2.textContent = 'Descargar PDF (listo)';
+        return;
+      }
+      setTimeout(poll, 700);
+    }).catch(function(e) {
+      console.error('Poll:', e);
+      setTimeout(poll, 2000);
+    });
+  }
+  poll();
+})();
+</script>
+""" + ui_theme.SHELL_CLOSE
+
+
+# ==============================================================
+#  Rendering helpers
+# ==============================================================
+
+def esc(s: Any) -> str:
+    return (str(s).replace("&","&amp;").replace("<","&lt;")
+            .replace(">","&gt;").replace('"',"&quot;"))
+
+
+def render_hit(h: Hit) -> str:
+    if h.error:
+        cls, badge, bcls = "error", "ERROR", "b-error"
+    elif h.matched:
+        cls, badge, bcls = "match", "MATCH", "b-match"
+    elif h.captcha_required:
+        cls, badge, bcls = "captcha", "CAPTCHA", "b-captcha"
+    elif h.notice:
+        cls, badge, bcls = "notice", "AVISO", "b-notice"
+    else:
+        cls, badge, bcls = "nomatch", "SIN COINCIDENCIA", "b-nomatch"
+
+    # Cuerpo: detalles (mismas filas limpias/prettificadas que el reporte PDF)
+    body = ""
+    if h.details:
+        try:
+            from report import _detail_rows_for
+            rows = _detail_rows_for(h, limit=16)
+        except Exception:
+            rows = [(k, str(v)) for d in h.details if isinstance(d, dict)
+                    for k, v in d.items() if v not in (None, "", "N/A")][:16]
+        if rows:
+            kv = "".join(f'<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>'
+                         for k, v in rows)
+            body = f"<table>{kv}</table>"
+        else:
+            body = '<p class="muted">Sin resultados.</p>'
+    elif h.error:
+        body = f'<p class="err">{esc(h.error)}</p>'
+    elif h.captcha_required:
+        body = f'<div class="captcha-msg">{esc(h.notice or "Esta fuente requiere captcha.")}</div>'
+    elif h.notice:
+        body = f'<div class="notice">{esc(h.notice)}</div>'
+    else:
+        body = '<p class="muted">Sin coincidencias.</p>'
+
+    # Evidencia visual: captura del certificado PDF rasterizado (preferida)
+    # o screenshot. Misma lógica que el reporte PDF (report._evidence_for).
+    evi_html = ""
+    try:
+        from report import _evidence_for
+        img_path, ev_kind, pdf_rel = _evidence_for(h)
+        if img_path:
+            rel = img_path.relative_to(DATA).as_posix()
+            cap = ("Certificado PDF capturado" if ev_kind == "pdf"
+                   else "Captura de pantalla")
+            evi_html = (
+                f'<div class="evidence" style="margin-top:12px">'
+                f'<div style="font-size:12px;color:#64748b;font-weight:600;'
+                f'margin-bottom:6px">📎 Evidencia — {cap}</div>'
+                f'<a href="/download/{esc(rel)}" target="_blank" rel="noopener">'
+                f'<img src="/download/{esc(rel)}" alt="evidencia" loading="lazy" '
+                f'style="max-width:100%;border:1px solid #e2e8f0;border-radius:8px;'
+                f'box-shadow:0 1px 4px rgba(0,0,0,.06)"></a></div>')
+    except Exception:
+        evi_html = ""
+
+    # Botón descarga si hay cert
+    dl_btn = ""
+    if h.download_url:
+        label = "⬇ Certificado PDF" if str(h.download_url).lower().endswith(".pdf") else "⬇ Evidencia"
+        dl_btn = f'<a class="dl" href="/download/{esc(h.download_url)}" target="_blank">{label}</a>'
+
+    # Categoría
+    cat = ""
+    for src in registry.all_sources():
+        if src.name == h.source:
+            cat = f'<span class="cat">{esc(src.category)}</span>'
+            url = src.source_url
+            break
+    else:
+        url = h.evidence_urls[0] if h.evidence_urls else "#"
+
+    return f"""
+    <div class="card {cls}">
+      <header>
+        <span class="badge {bcls}">{badge}</span>
+        <h2>{esc(h.source)}</h2>
+        {cat}
+        <a class="url" href="{esc(url)}" target="_blank" rel="noopener">↗ abrir fuente</a>
+        <span class="elapsed">{h.elapsed_s:.2f}s</span>
+        {dl_btn}
+      </header>
+      <p class="summary">{esc(h.summary)}</p>
+      {body}
+      {evi_html}
+    </div>"""
+
+
+def render_results(query: dict, hits: list[Hit], total_s: float,
+                   token: str = "") -> str:
+    query = dict(query)
+    query["__token"] = token  # usado para link de descarga PDF
+    total = sum(len(h.details) for h in hits)
+    n_match = sum(1 for h in hits if h.matched)
+    n_captcha = sum(1 for h in hits if h.captcha_required)
+    n_notice  = sum(1 for h in hits if h.notice and not h.error and not h.matched and not h.captcha_required)
+    n_err     = sum(1 for h in hits if h.error)
+    n_no      = len(hits) - n_match - n_captcha - n_notice - n_err
+
+    qtxt = []
+    if query.get("nombre"): qtxt.append(f"nombre=<b>{esc(query['nombre'])}</b>")
+    if query.get("cedula"): qtxt.append(f"CC=<b>{esc(query['cedula'])}</b>")
+    if query.get("fecha_exp"): qtxt.append(f"fecha_exp=<b>{esc(query['fecha_exp'])}</b>")
+    last_q = ""
+    if qtxt:
+        last_q = f'<div class="last-query"><b>Última búsqueda:</b> {" · ".join(qtxt)}</div>'
+
+    stats = f"""
+    <div class="results-toolbar">
+      <div class="stats">
+        <div class="stat"><b>{len(hits)}</b><small>fuentes</small></div>
+        <div class="stat"><b>{n_match}</b><small>matches</small></div>
+        <div class="stat"><b>{n_captcha}</b><small>captcha</small></div>
+        <div class="stat"><b>{n_notice}</b><small>avisos</small></div>
+        <div class="stat"><b>{n_err}</b><small>errores</small></div>
+        <div class="stat"><b>{total}</b><small>registros</small></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a class="dl-pdf" href="/download/pdf/{query.get('__token','')}">⬇ PDF</a>
+        <a class="new-search" href="/nueva">↻ Nueva búsqueda</a>
+      </div>
+    </div>"""
+    # Orden: fuentes PRINCIPALES / excluyentes primero (orden canónico),
+    # luego el resto. Mismo criterio que el reporte PDF.
+    try:
+        from report import _is_principal, _principal_order
+        principals = sorted([h for h in hits if _is_principal(h)],
+                            key=_principal_order)
+        others = [h for h in hits if not _is_principal(h)]
+    except Exception:
+        principals, others = [], list(hits)
+
+    def _divider(txt):
+        return (f'<h2 style="font-size:18px;color:#1A2B4A;margin:28px 0 14px;'
+                f'padding-bottom:8px;border-bottom:2px solid #00D4D4">{esc(txt)}</h2>')
+
+    body_cards = ""
+    if principals:
+        body_cards += _divider("Fuentes principales — Excluyentes y prioritarias")
+        body_cards += "".join(render_hit(h) for h in principals)
+        body_cards += _divider("Información general")
+        body_cards += "".join(render_hit(h) for h in others)
+    else:
+        body_cards = "".join(render_hit(h) for h in others)
+    return last_q + stats + body_cards
+
+
+def empty_state(total_sources: int) -> str:
+    if total_sources == 0:
+        return ('<div class="card pad empty-state" style="margin-top:20px">'
+                '<div class="ic">!</div><h4>No hay fuentes registradas</h4>'
+                '<p>Aún no se han implementado fuentes. Ver sources/_existing.py</p></div>')
+    return ""
+
+
+def _alert(msg: str, kind: str = "err") -> str:
+    """Aviso enmarcado con el estilo del tema (para errores de validación)."""
+    return (f'<div class="card pad" style="margin-top:20px">'
+            f'<div class="auth-msg {kind}" style="margin:0">{esc(msg)}</div></div>')
+
+
+# ==============================================================
+#  Routes
+# ==============================================================
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    total = len(registry.all_sources())
+    solver_name = SOLVER.name
+    body = empty_state(total)
+
+    if request.method == "POST":
+        mode = (request.form.get("mode") or "persona").strip().lower()
+        # --- Búsqueda por NIT (empresa → representantes → personas) ---
+        if mode == "nit" or (request.form.get("nit") or "").strip():
+            import re as _re
+            nit = _re.sub(r"\D", "", request.form.get("nit") or "")
+            if not nit:
+                body = _alert('Ingresa un NIT válido (solo dígitos).')
+                return render_template_string(
+                    TEMPLATE, body=body, total_sources=total,
+                    solver_name=solver_name,
+                    ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            nit_mode = (request.form.get("nit_mode") or "empresa").strip().lower()
+            if nit_mode not in ("reps", "empresa", "ambas"):
+                nit_mode = "empresa"
+            from runs import run_nit_search
+            nit_token = run_nit_search(nit, SOLVER, mode=nit_mode)
+            audit("search_nit", user=_audit_user(), nit=nit, mode=nit_mode,
+                  token=nit_token)
+            return redirect(url_for("nit_results", token=nit_token), code=303)
+
+        nombre = (request.form.get("nombre") or "").strip()
+        cedula = (request.form.get("cedula") or "").strip()
+        fecha_exp = (request.form.get("fecha_exp") or "").strip()
+        if not nombre and not cedula:
+            body = _alert('Ingresa al menos nombre o cédula.')
+        else:
+            # Streaming: lanza búsqueda en background
+            # Detectar Vercel serverless: usar ejecución inline (sin subprocess)
+            _is_vercel = os.environ.get("VERIFYDATA_ENV") == "production"
+            if _is_vercel:
+                from runs import run_search_progressive_inline
+                run_fn = run_search_progressive_inline
+            else:
+                from runs import run_search_progressive
+                run_fn = run_search_progressive
+            # Default: TODAS las fuentes (64). Para un run rápido usar ?sources=featured.
+            sources_mode = request.args.get("sources", "all")
+            query = {"nombre": nombre, "cedula": cedula,
+                     "fecha_exp": fecha_exp,
+                     "__sources": sources_mode}
+            token = run_fn(
+                query, cedula, fecha_exp, SOLVER, skip_browser=False)
+            # Auditoría AML: quién consultó qué cédula/nombre y cuándo.
+            audit("search", user=_audit_user(), cedula=cedula or None,
+                  nombre=nombre or None, sources=sources_mode, token=token)
+            return redirect(url_for("results", token=token), code=303)
+
+    return render_template_string(
+        TEMPLATE, body=body, total_sources=total, solver_name=solver_name,
+        ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+@app.route("/results/<token>")
+def results(token: str):
+    """Página de resultados magazine-style (matching the PDF)."""
+    from runs import get_run
+    state = get_run(token)
+    if not state:
+        return redirect(url_for("index"), code=303)
+    total = len(registry.all_sources())
+    query = state.query if isinstance(state.query, dict) else {}
+    import json as _json
+    cat_map = _json.dumps(
+        {s.name: getattr(s, "category", "Otras") for s in registry.all_sources()},
+        ensure_ascii=False)
+    return render_template_string(
+        TEMPLATE_RESULTS,
+        query=query, token=token, total_sources=total, cat_map=cat_map)
+
+
+# ==============================================================
+#  Búsqueda por NIT — página resumen (empresa + representantes)
+# ==============================================================
+NIT_TEMPLATE = ui_theme.head_open("VerifyData — Empresa · NIT {{ nit }}") + \
+    ui_theme.shell_open("empresa", "Verificar empresa",
+                        "Empresa (NIT) · Reporte consolidado") + """
+<style>{% raw %}
+  .nit .status-line{font-size:14px;color:var(--text);font-weight:600;display:flex;align-items:center;gap:10px;}
+  .nit .status-line.err{color:#b91c1c;}
+  .nit .card-h{font-weight:700;color:var(--text);font-size:15px;margin:0 0 6px;}
+  .nit table.kv{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;}
+  .nit .kv th{text-align:left;color:var(--text-faint);font-weight:600;font-size:11px;
+    text-transform:uppercase;letter-spacing:.05em;padding:7px 12px 7px 0;white-space:nowrap;
+    vertical-align:top;width:180px;}
+  .nit .kv td{color:var(--text);font-size:13px;padding:7px 0;font-weight:600;border-top:1px solid var(--line);}
+  .nit .kv tr:first-child th,.nit .kv tr:first-child td{border-top:none;}
+  .nit .report-cta{display:flex;align-items:center;gap:16px;justify-content:space-between;
+    flex-wrap:wrap;background:linear-gradient(135deg,#2b0f4a,#050A5C 60%,#1a1050);color:#fff;
+    border:none;border-radius:14px;padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow);}
+  .nit .report-cta .rc-t{font-weight:700;font-size:16px;}
+  .nit .report-cta .rc-s{color:#c7cdf5;font-size:12px;margin-top:4px;}
+  .nit .report-cta .pbar{background:rgba(255,255,255,.14);border:none;max-width:340px;width:100%;margin-top:10px;}
+  .nit .emp{border-left:3px solid var(--violet);padding-left:14px;margin:14px 0;}
+  .nit .emp .rz{font-weight:700;color:var(--text);font-size:16px;}
+  .nit .emp .meta{color:var(--text-dim);font-size:13px;margin-top:2px;}
+  .nit .reps{margin:10px 0 0;padding:0;list-style:none;}
+  .nit .reps li{padding:8px 0;border-top:1px solid var(--line);font-size:13.5px;color:var(--text-dim);}
+  .nit .tag{display:inline-block;font-size:10px;font-weight:700;padding:3px 9px;border-radius:20px;
+    letter-spacing:.4px;vertical-align:1px;margin-right:4px;}
+  .nit .tag-p{background:rgba(62,122,249,.12);color:#1d4ed8;}
+  .nit .tag-e{background:rgba(105,65,244,.12);color:#5b21b6;}
+  .nit .tag-lvl{background:#f1f0f6;color:var(--text-dim);}
+  .nit .person{display:flex;align-items:center;gap:14px;justify-content:space-between;
+    padding:14px 16px;border:1px solid var(--line);border-radius:12px;margin-bottom:10px;background:#fff;}
+  .nit .person .who{font-weight:700;color:var(--text);font-size:14.5px;}
+  .nit .person .det{color:var(--text-faint);font-size:12px;margin-top:2px;}
+  .nit .bar{height:8px;background:#f1f0f6;border-radius:5px;overflow:hidden;width:200px;margin-top:8px;}
+  .nit .bar>i{display:block;height:100%;background:var(--grad-btn);width:0;border-radius:5px;transition:width .4s;}
+  .nit .counts{font-size:12px;color:var(--text-faint);margin-top:6px;}
+  .nit .counts b.m{color:#15803d;}.nit .counts b.c{color:#5b21b6;}.nit .counts b.e{color:#b91c1c;}
+  .nit .err{color:#b91c1c;font-weight:600;}
+{% endraw %}</style>
+
+<div class="nit">
+  <div class="card res-header">
+    <div class="who">
+      <div class="wordmark wm-light wm-sm">Verify<span>Data</span></div>
+      <p class="kicker" style="margin-bottom:4px">Reporte de verificación · Empresa</p>
+      <h3 id="emp-title">Empresa · NIT {{ nit }}</h3>
+      <div class="meta" id="emp-sub">Resolviendo en RUES…</div>
+    </div>
+    <div class="acts"><a class="btn btn-secondary" href="/">Nueva búsqueda</a></div>
+  </div>
+
+  <div class="card pad" id="status-card" style="margin-bottom:16px">
+    <div class="status-line"><span class="spin"></span> Consultando RUES…</div>
+  </div>
+
+  <div id="empresa-card"></div>
+  <div id="empresa-report"></div>
+  <div id="tree"></div>
+  <div id="people"></div>
+</div>
+
+<script>
+var TOKEN = {{ token|tojson }};
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+function kvRow(k,v){ return v? ('<tr><th>'+esc(k)+'</th><td>'+esc(v)+'</td></tr>') : ''; }
+function renderEmpresaCard(d){
+  var e=d.empresa_datos||{}; var el=document.getElementById('empresa-card');
+  var hasData = e.razon_social||e.matricula||e.estado||e.camara||e.organizacion;
+  if(!hasData && !e.error){ el.innerHTML=''; return; }
+  var rows = kvRow('Razón social', e.razon_social)+
+             kvRow('NIT', e.nit||d.nit)+
+             kvRow('Matrícula mercantil', e.matricula)+
+             kvRow('Estado', e.estado)+
+             kvRow('Cámara de comercio', e.camara)+
+             kvRow('Organización jurídica', e.organizacion)+
+             kvRow('Categoría', e.categoria);
+  var err = e.error? ('<div class="err" style="font-size:13px;margin-top:8px">'+esc(e.error)+'</div>') : '';
+  el.innerHTML = '<div class="card pad" style="margin-bottom:16px"><div class="card-h">Registro mercantil (RUES)</div>'+
+     (rows? ('<table class="kv">'+rows+'</table>') : '')+err+'</div>';
+}
+function renderEmpresaReport(d){
+  var el=document.getElementById('empresa-report');
+  if(d.mode!=='empresa' && d.mode!=='ambas'){ el.innerHTML=''; return; }
+  var run=d.empresa_run||null; var tok=d.empresa_token;
+  if(!tok){
+    el.innerHTML = run===null && d.status==='resolving' ? '' :
+      '<div class="card pad" style="margin-bottom:16px"><div class="err" style="font-size:13px">No se pudo lanzar el reporte de la empresa'+
+      ((d.empresa_datos&&d.empresa_datos.launch_error)?(': '+esc(d.empresa_datos.launch_error)):'')+'</div></div>';
+    return;
+  }
+  var total=(run&&run.total)||0, done=(run&&run.done)||0;
+  var pct= total? Math.round(done*100/total):0;
+  var completed=(run&&run.completed);
+  el.innerHTML =
+    '<div class="report-cta"><div style="flex:1;min-width:220px">'+
+      '<div class="rc-t">Reporte de la empresa'+(d.empresa?(' · '+esc(d.empresa)):'')+'</div>'+
+      '<div class="rc-s">'+done+'/'+total+' fuentes · '+
+        '<b style="color:#4ade80">'+((run&&run.matched)||0)+' con dato</b> · '+
+        '<b style="color:#c4b5fd">'+((run&&run.captcha)||0)+' verificar</b> · '+
+        '<b style="color:#fca5a5">'+((run&&run.error)||0)+' error</b></div>'+
+      '<div class="pbar"><i style="width:'+pct+'%"></i></div>'+
+    '</div>'+
+    '<a class="btn btn-primary" href="/results/'+encodeURIComponent(tok)+'">'+
+      (completed?'Ver reporte':'Ver progreso')+'</a>'+
+    '</div>';
+}
+function renderTree(tree){
+  var h='';
+  (tree||[]).forEach(function(n){
+    h+='<div class="emp">';
+    h+='<div class="rz">'+esc(n.razon_social||('NIT '+n.nit));
+    if(n.nivel>0) h+=' <span class="tag tag-lvl">nivel '+n.nivel+'</span>';
+    h+='</div>';
+    h+='<div class="meta">NIT '+esc(n.nit)+(n.estado?(' · '+esc(n.estado)):'')+
+       (n.camara?(' · '+esc(n.camara)):'')+'</div>';
+    if(n.error){ h+='<div class="err" style="font-size:13px">'+esc(n.error)+'</div>'; }
+    if(n.reps && n.reps.length){
+      h+='<ul class="reps">';
+      n.reps.forEach(function(r){
+        var t=r.es_empresa?'<span class="tag tag-e">EMPRESA</span>':'<span class="tag tag-p">PERSONA</span>';
+        h+='<li>'+t+' <b style="color:var(--text)">'+esc(r.cargo)+'</b>: '+esc(r.nombre)+
+           (r.identificacion?(' · id '+esc(r.identificacion)):'')+'</li>';
+      });
+      h+='</ul>';
+    }
+    h+='</div>';
+  });
+  document.getElementById('tree').innerHTML = h ?
+    ('<div class="card pad" style="margin-bottom:16px"><div class="card-h">Estructura societaria y representantes</div>'+h+'</div>') : '';
+}
+function renderPeople(personas){
+  if(!personas || !personas.length){ document.getElementById('people').innerHTML=''; return; }
+  var h='<div class="card pad" style="margin-bottom:16px"><div class="card-h">Personas consultadas ('+personas.length+')</div>';
+  personas.forEach(function(p){
+    var run=p.run||{}; var total=run.total||0; var done=run.done||0;
+    var pct= total? Math.round(done*100/total):0;
+    var completed=run.completed;
+    h+='<div class="person"><div style="flex:1"><div class="who">'+esc(p.nombre)+'</div>'+
+       '<div class="det">CC '+esc(p.cedula)+' · '+esc(p.cargo)+' @ '+esc(p.empresa)+'</div>';
+    if(p.token){
+      h+='<div class="bar"><i style="width:'+pct+'%"></i></div>'+
+         '<div class="counts">'+done+'/'+total+' fuentes · '+
+         '<b class="m">'+(run.matched||0)+' coinc.</b> · '+
+         '<b class="c">'+(run.captcha||0)+' verificar</b> · '+
+         '<b class="e">'+(run.error||0)+' error</b></div>';
+    } else {
+      h+='<div class="err" style="font-size:12px">No se pudo lanzar la búsqueda'+
+         (p.launch_error?(': '+esc(p.launch_error)):'')+'</div>';
+    }
+    h+='</div>';
+    if(p.token){
+      h+='<a class="btn btn-primary btn-sm" href="/results/'+encodeURIComponent(p.token)+'">'+
+         (completed?'Ver reporte':'Ver progreso')+'</a>';
+    }
+    h+='</div>';
+  });
+  h+='</div>';
+  document.getElementById('people').innerHTML=h;
+}
+function poll(){
+  fetch('/api/nit/'+encodeURIComponent(TOKEN)).then(function(r){return r.json();}).then(function(d){
+    var mode=d.mode||'reps';
+    var wantEmpresa=(mode==='empresa'||mode==='ambas');
+    var wantReps=(mode==='reps'||mode==='ambas');
+    if(d.empresa){ document.getElementById('emp-title').textContent='Empresa · '+d.empresa; }
+    var empresaPending=wantEmpresa && d.empresa_token && (!d.empresa_run||!d.empresa_run.completed);
+    var personasPending=(d.personas||[]).some(function(p){return p.token && (!p.run||!p.run.completed);});
+    var sc=document.getElementById('status-card');
+    if(d.status==='resolving'){
+      document.getElementById('emp-sub').textContent='Resolviendo en RUES…';
+      sc.innerHTML='<div class="status-line"><span class="spin"></span> Consultando RUES'+
+        (wantReps?', extrayendo representantes legales':'')+'…</div>';
+    } else if(d.status==='error'){
+      document.getElementById('emp-sub').textContent='No fue posible resolver el NIT.';
+      sc.innerHTML='<div class="status-line err">'+esc(d.error||'Error desconocido')+'</div>';
+    } else if(d.status==='ready'){
+      var allDone=!empresaPending && !personasPending;
+      var parts=[];
+      if(wantEmpresa) parts.push('reporte de empresa');
+      if(wantReps) parts.push((d.personas||[]).length+' representante(s)');
+      document.getElementById('emp-sub').textContent=
+        parts.join(' · ')+' · '+(allDone?'consultas completadas':'consultas en curso…');
+      sc.innerHTML='<div class="status-line">'+(allDone?'✓ ':'<span class="spin"></span> ')+
+        'Empresa resuelta desde RUES.</div>';
+    }
+    renderEmpresaCard(d);
+    if(wantEmpresa) renderEmpresaReport(d); else document.getElementById('empresa-report').innerHTML='';
+    if(wantReps){ renderTree(d.tree); renderPeople(d.personas); }
+    else { document.getElementById('tree').innerHTML=''; document.getElementById('people').innerHTML=''; }
+    var keep=(d.status==='resolving') || (d.status==='ready' && (empresaPending||personasPending));
+    if(keep) setTimeout(poll, 2500);
+  }).catch(function(){ setTimeout(poll, 4000); });
+}
+poll();
+</script>
+""" + ui_theme.SHELL_CLOSE
+
+
+@app.route("/nit/<token>")
+def nit_results(token: str):
+    """Página resumen de una búsqueda por NIT."""
+    from runs import get_nit_run
+    state = get_nit_run(token)
+    if not state:
+        return redirect(url_for("index"), code=303)
+    return render_template_string(NIT_TEMPLATE, token=token, nit=state.nit)
+
+
+@app.route("/api/nit/<token>")
+def api_nit(token: str):
+    """Estado JSON del run-NIT (para polling)."""
+    from runs import nit_run_payload
+    from flask import jsonify
+    payload = nit_run_payload(token)
+    if payload is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/run/<token>")
+def api_run(token: str):
+    """Endpoint JSON para polling de resultados.
+
+    Enriquece cada fuente con datos derivados del reporte PDF (única fuente
+    de verdad) para que el front-end muestre lo mismo que el PDF:
+      - evidence_img / evidence_kind: captura del certificado PDF rasterizado
+        (o screenshot) — el front la embebe como <img>.
+      - is_principal / principal_order: fuentes principales/excluyentes primero.
+      - clean_rows: filas key/value limpias y prettificadas.
+      - status_kind: match | nomatch | nodisp | manual | error."""
+    from runs import get_run
+    from flask import jsonify
+    state = get_run(token)
+    if not state:
+        return jsonify({"error": "not found"}), 404
+    d = state.to_dict()
+    try:
+        from types import SimpleNamespace
+        from report import (_evidence_for, _detail_rows_for, _is_principal,
+                            _principal_order, _status_kind, _status_group,
+                            LABELS)
+        for _name, hd in (d.get("sources") or {}).items():
+            if not isinstance(hd, dict):
+                continue
+            ns = SimpleNamespace(**hd)
+            try:
+                img, kind, _pdf = _evidence_for(ns)
+                if img:
+                    hd["evidence_img"] = img.relative_to(DATA).as_posix()
+                    hd["evidence_kind"] = kind
+            except Exception:
+                # No romper la respuesta por una evidencia; dejar rastro y
+                # devolver evidence_img: null en vez de tragarse el error.
+                log.warning("evidencia no resuelta para fuente %r (run %s)",
+                            _name, token, exc_info=True)
+                hd["evidence_img"] = None
+            try:
+                hd["is_principal"] = _is_principal(ns)
+                hd["principal_order"] = _principal_order(ns)
+                hd["status_kind"] = _status_kind(ns)
+                hd["status_group"] = _status_group(ns)
+                hd["status_label"] = LABELS.get(hd["status_kind"],
+                                                hd["status_kind"].upper())
+                hd["clean_rows"] = _detail_rows_for(ns, limit=12)
+            except Exception:
+                log.warning("enriquecimiento fallido para fuente %r (run %s)",
+                            _name, token, exc_info=True)
+    except Exception:
+        log.exception("fallo enriqueciendo resultados del run %s", token)
+    return jsonify(d)
+
+
+@app.route("/api/refresh-lists", methods=["POST"])
+@_auth.require_role("admin")
+def api_refresh_lists():
+    """Actualiza las listas estáticas (OFAC, UN, EU, UK, etc).
+
+    Solo admin: es una operación pesada (descarga OFAC/UN/EU/…) que un viewer
+    no debe poder disparar. Ver A7 del handoff de seguridad."""
+    from lists import LocalListManager
+    from lists.downloaders import (ofac_sdn, ofac_consolidated, ofac_addrs,
+                                    un_consolidated, eu_consolidated,
+                                    bis_dpl, canada_sema,
+                                    worldbank_ineligible, nca_uk_most_wanted,
+                                    fbi_wanted, interpol_red)
+    from flask import jsonify
+    results = {}
+    mgr = LocalListManager()
+    jobs = {
+        "ofac_sdn": ofac_sdn, "ofac_consolidated": ofac_consolidated,
+        "ofac_addrs": ofac_addrs, "un_consolidated": un_consolidated,
+        "eu_consolidated": eu_consolidated, "bis_dpl": bis_dpl,
+        "canada_sema": canada_sema, "worldbank_ineligible": worldbank_ineligible,
+        "nca_uk_most_wanted": nca_uk_most_wanted,
+        "fbi_wanted": fbi_wanted, "interpol_red": interpol_red,
+    }
+    for name, fetcher in jobs.items():
+        try:
+            n = mgr.refresh(name, fetcher, force=True)
+            results[name] = {"ok": True, "count": n}
+        except Exception as e:
+            results[name] = {"ok": False, "error": str(e)}
+    audit("lists_refresh", user=_audit_user(),
+          ok=[k for k, v in results.items() if v.get("ok")],
+          fail=[k for k, v in results.items() if not v.get("ok")])
+    return jsonify({"results": results, "timestamp":
+                   datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+
+
+@app.route("/api/lists-inventory")
+def api_lists_inventory():
+    """Inventario de listas estáticas (para cron weekly)."""
+    from flask import jsonify
+    from lists import LocalListManager
+    mgr = LocalListManager()
+    from db import get_db
+    inventory = []
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT source, url, last_fetched, last_count, format "
+                    "FROM list_meta ORDER BY source")
+        for row in cur.fetchall():
+            inventory.append({
+                "source": row["source"], "url": row["url"],
+                "last_fetched": row["last_fetched"],
+                "last_count": row["last_count"],
+                "format": row["format"],
+            })
+    return jsonify({"lists": inventory,
+                   "total_lists": len(inventory)})
+
+
+@app.route("/nueva")
+def nueva():
+    return redirect(url_for("index"), code=303)
+
+
+@app.route("/clear")
+def clear():
+    RESULTS_CACHE.clear()
+    return redirect(url_for("index"), code=303)
+
+
+@app.route("/download/<path:filename>")
+def download(filename: str):
+    full = (DATA / filename).resolve()
+    if not str(full).startswith(str(DATA.resolve())):
+        abort(404)
+    if not full.exists():
+        abort(404)
+    # Detectar mimetype por extensión (imágenes, pdf, html)
+    ext = full.suffix.lower()
+    mime = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+        ".pdf": "application/pdf", ".json": "application/json",
+    }.get(ext, "application/octet-stream")
+    # Inline (no as_attachment) para que el browser las renderice en <img>
+    return send_file(str(full), mimetype=mime, conditional=True)
+
+
+@app.route("/download/pdf/<token>")
+def download_pdf(token: str):
+    """Genera y descarga el reporte PDF del search run."""
+    from flask import Response
+    from report import generate_pdf
+    from runs import get_run
+    state = get_run(token)
+    if not state:
+        abort(404)
+    if not state.sources:
+        # El run existe pero aún no hay resultados: no confundir con 404.
+        from flask import jsonify
+        resp = jsonify({"error": "run_in_progress",
+                        "detail": "La búsqueda aún no tiene resultados; "
+                                  "reintentar en unos segundos.",
+                        "token": token})
+        resp.status_code = 202
+        resp.headers["Retry-After"] = "5"
+        return resp
+    # Reconstruir los Hits con sus source_url
+    from sources import registry
+    url_map = {s.name: s.source_url for s in registry.all_sources()}
+    hits = []
+    for name, d in state.sources.items():
+        try:
+            h = Hit(**{k: v for k, v in d.items() if k != "source_url"})
+            h.source_url = url_map.get(name, "")
+            hits.append(h)
+        except Exception:
+            continue
+    pdf_bytes = generate_pdf(state.query, hits)
+    # No incluir la cédula (dato personal, Ley 1581) en el nombre del archivo:
+    # quedaría en el historial del navegador, logs de proxy y caché. Se usa el
+    # token (no personal) y se sanitiza para evitar header injection.
+    safe_token = re.sub(r"[^0-9A-Za-z_-]", "", token)[:32] or "reporte"
+    fname = f"verifydata_{safe_token}.pdf"
+    ced = state.query.get("cedula") if isinstance(state.query, dict) else None
+    audit("pdf_download", user=_audit_user(), token=token, cedula=ced or None)
+    return Response(pdf_bytes, mimetype="application/pdf",
+                    headers={"Content-Disposition":
+                             f"attachment; filename=\"{fname}\"; "
+                             f"filename*=UTF-8''{fname}"})
+
+
+# ==============================================================
+#  Página de Perfil Crediticio
+# ==============================================================
+
+CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
+    ui_theme.shell_open("credito", "Perfil crediticio",
+                        "Evaluación de riesgo · Crédito") + """
+<style>{% raw %}
+  .cr-form .section-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);margin:0 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .cr-form .field-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+  .cr-form .field-grid.full{grid-template-columns:1fr}
+  .cr-form .field-compact label{font-size:11px;margin-bottom:2px}
+  .cr-form .field-compact input,.cr-form .field-compact select{font-size:13px;padding:9px 11px}
+  .cr-form .checkbox-row{display:flex;gap:24px;align-items:center;margin:10px 0}
+  .cr-form .checkbox-row label{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;cursor:pointer}
+  .cr-form .checkbox-row input[type=checkbox]{width:17px;height:17px;accent-color:var(--violet)}
+  .cr-result{background:linear-gradient(135deg,rgba(105,65,244,.04),rgba(62,122,249,.04));border:1px solid rgba(105,65,244,.18);border-radius:14px;padding:24px;margin-top:20px}
+  .cr-result .score-big{font-size:56px;font-weight:800;line-height:1}
+  .cr-result .score-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-top:6px}
+  .cr-result .risk-pill{display:inline-block;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700;letter-spacing:.03em}
+  .cr-result .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:18px}
+  .cr-result .stat-val{font-size:18px;font-weight:700}
+  .cr-result .stat-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint)}
+  .subjects-dropdown{max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;margin-top:8px;background:#fff}
+  .subjects-dropdown .opt{padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px}
+  .subjects-dropdown .opt:hover{background:rgba(105,65,244,.06)}
+  .subjects-dropdown .opt .sub{color:var(--text-faint);font-size:11px}
+  .mini-badge{display:inline-block;padding:2px 7px;border-radius:9px;font-size:10px;font-weight:700;margin-left:6px}
+  .mini-badge.warn{background:rgba(239,68,68,.1);color:#b91c1c}
+  .mini-badge.good{background:rgba(34,197,94,.1);color:#15803d}
+  .act-bar{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
+  .doc-preview{margin-top:6px;font-size:11px;color:var(--text-faint)}
+  .doc-preview img{max-width:120px;max-height:80px;border-radius:6px;border:1px solid var(--line)}
+  .doc-preview .doc-ok{color:#15803d;font-weight:600}
+  @media(max-width:800px){.cr-form .field-grid{grid-template-columns:1fr}.cr-result .stats{grid-template-columns:1fr 1fr}}
+{% endraw %}</style>
+
+<div class="main-content">
+  <div class="hero-row" style="margin-bottom:8px">
+    <div class="menu-hero">
+      <p class="eyebrow">Riesgo crediticio</p>
+      <h2>Evalúa la capacidad de pago de un cliente</h2>
+      <p>Ingresa los datos financieros del cliente para obtener un
+         <b style="color:var(--text)">score crediticio</b>, nivel de riesgo y
+         monto máximo recomendado, combinando datos de RSales.</p>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+    <button type="button" class="btn btn-secondary" onclick="document.getElementById('subjects-list').classList.toggle('hidden')">
+      📋 Usar sujetos de prueba (Excel)
+    </button>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="descargarExcel()" id="btn-descargar" style="display:none">
+      ⬇ Descargar Excel
+    </button>
+    <span id="rsales-status" style="font-size:11px;color:var(--text-faint);display:none"></span>
+  </div>
+
+  <div id="subjects-list" class="card pad subjects-dropdown hidden" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-weight:700;font-size:14px">Sujetos de prueba (65 clientes del Excel)</span>
+      <input type="text" id="subj-search" placeholder="Buscar por nombre o cédula…" style="width:280px;font-size:12px;padding:6px 10px;border:1px solid var(--line);border-radius:8px"
+             oninput="filterSubjects()">
+    </div>
+    <div id="subjects-options"></div>
+  </div>
+
+  <form id="credito-form" class="cr-form">
+    <!-- DATOS BÁSICOS -->
+    <div class="card pad" style="margin-bottom:14px">
+      <div class="section-title">Datos del cliente</div>
+      <div class="field-grid">
+        <div class="field field-compact full">
+          <label>Nombre completo</label>
+          <input name="nombre" id="cr-nombre" placeholder="Ej: Juan Pérez" required>
+        </div>
+        <div class="field field-compact">
+          <label>Cédula / NIT</label>
+          <input name="cedula" id="cr-cedula" placeholder="1234567890" required>
+        </div>
+        <div class="field field-compact">
+          <label>Tipo de solicitud</label>
+          <select name="tipo_solicitud" id="cr-tipo">
+            <option value="SOLICITUD DE CREDITO">Solicitud de crédito</option>
+            <option value="AUMENTO DE CUPO">Aumento de cupo</option>
+            <option value="TRASLADO DE CUPO">Traslado de cupo</option>
+            <option value="ACTIVACION CLIENTE">Activación cliente</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- DATOS FINANCIEROS -->
+    <div class="card pad" style="margin-bottom:14px">
+      <div class="section-title">Información financiera</div>
+      <div class="field-grid">
+        <div class="field field-compact">
+          <label>Crédito actual ($)</label>
+          <input name="credito_actual" id="cr-cactual" type="number" placeholder="0" step="1000">
+        </div>
+        <div class="field field-compact">
+          <label>Monto a solicitar ($)</label>
+          <input name="monto_solicitar" id="cr-msolicitar" type="number" placeholder="0" step="1000">
+        </div>
+        <div class="field field-compact">
+          <label>Cupo inicial ($)</label>
+          <input name="cupo_inicial" id="cr-cinicial" type="number" placeholder="0" step="1000">
+        </div>
+        <div class="field field-compact">
+          <label>Promedio compras ($)</label>
+          <input name="promedio_compras" id="cr-pcompras" type="number" placeholder="0" step="1000">
+        </div>
+        <div class="field field-compact">
+          <label>Compra mínima ($)</label>
+          <input name="compra_minima" id="cr-cmin" type="number" placeholder="0" step="1000">
+        </div>
+        <div class="field field-compact">
+          <label>Compra máxima ($)</label>
+          <input name="compra_maxima" id="cr-cmax" type="number" placeholder="0" step="1000">
+        </div>
+        <div class="field field-compact">
+          <label>Número de compras</label>
+          <input name="numero_compras" id="cr-ncompras" type="number" placeholder="0">
+        </div>
+        <div class="field field-compact">
+          <label>Año del dato de compras</label>
+          <input name="ano_dato_compras" id="cr-ano" type="number" placeholder="2026" value="2026">
+        </div>
+        <div class="field field-compact">
+          <label>Promedio de pago (días)</label>
+          <input name="promedio_pago_dias" id="cr-ppago" type="number" placeholder="30" step="1">
+        </div>
+      </div>
+    </div>
+
+    <!-- RIESGO -->
+    <div class="card pad" style="margin-bottom:14px">
+      <div class="section-title">Datos de riesgo</div>
+      <div class="field-grid">
+        <div class="field field-compact">
+          <label>Calificación Datacrédito (0-1000)</label>
+          <input name="calificacion_datacredito" id="cr-dc" type="number" placeholder="0" min="0" max="1000">
+        </div>
+        <div class="field field-compact">
+          <label>Consultas últimos 6 meses</label>
+          <input name="consultas_6m" id="cr-cons6m" placeholder="Ej: 3 consultas">
+        </div>
+      </div>
+      <div class="checkbox-row" style="margin-top:12px">
+        <label><input type="checkbox" name="presenta_mora" id="cr-mora"> Presenta mora</label>
+        <label><input type="checkbox" name="presenta_cartera_castigada" id="cr-castigada"> Cartera castigada</label>
+        <label><input type="checkbox" name="aprobacion" id="cr-aprobacion"> Aprobación previa</label>
+      </div>
+      <div class="field field-compact" style="margin-top:10px">
+        <label>Observaciones</label>
+        <input name="observaciones" id="cr-obs" placeholder="Notas adicionales…">
+      </div>
+    </div>
+
+    <!-- DOCUMENTOS -->
+    <div class="card pad" style="margin-bottom:14px">
+      <div class="section-title">Documentos adjuntos (opcional)</div>
+      <p style="font-size:12px;color:var(--text-faint);margin:0 0 14px">Sube documentos para completar el perfil. La documentación completa mejora el score (5%).</p>
+      <div class="field-grid" style="grid-template-columns:1fr 1fr">
+        <div class="field field-compact">
+          <label>📄 Cédula frontal</label>
+          <input type="file" id="doc-cedula-front" accept="image/*,.pdf" onchange="previewDoc(this,'cel-front')">
+          <div id="cel-front" class="doc-preview"></div>
+        </div>
+        <div class="field field-compact">
+          <label>📄 Cédula posterior</label>
+          <input type="file" id="doc-cedula-back" accept="image/*,.pdf" onchange="previewDoc(this,'cel-back')">
+          <div id="cel-back" class="doc-preview"></div>
+        </div>
+        <div class="field field-compact">
+          <label>📄 RUT</label>
+          <input type="file" id="doc-rut" accept="image/*,.pdf" onchange="previewDoc(this,'rut-preview')">
+          <div id="rut-preview" class="doc-preview"></div>
+        </div>
+        <div class="field field-compact">
+          <label>📄 Cámara de comercio</label>
+          <input type="file" id="doc-camara" accept="image/*,.pdf" onchange="previewDoc(this,'cam-preview')">
+          <div id="cam-preview" class="doc-preview"></div>
+        </div>
+        <div class="field field-compact">
+          <label>📄 Estados financieros</label>
+          <input type="file" id="doc-estados" accept="image/*,.pdf,.xlsx,.xls" onchange="previewDoc(this,'ef-preview')">
+          <div id="ef-preview" class="doc-preview"></div>
+        </div>
+        <div class="field field-compact">
+          <label>📄 Declaración de renta</label>
+          <input type="file" id="doc-renta" accept="image/*,.pdf" onchange="previewDoc(this,'renta-preview')">
+          <div id="renta-preview" class="doc-preview"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="act-bar">
+      <button type="submit" class="btn btn-primary">📊 Evaluar riesgo crediticio</button>
+      <button type="button" class="btn btn-ghost" onclick="limpiarForm()">Limpiar</button>
+    </div>
+  </form>
+
+  <!-- RESULTADO -->
+  <div id="resultado" class="cr-result" style="display:none"></div>
+</div>
+
+<script>
+var CEDULA_ACTUAL = '';
+var RSALES_DATA = null;
+var RESULTADO_ACTUAL = null;
+
+// ── Pre-calentar cache RSales ──────────────────────────
+(function(){
+  fetch('/api/credit/warm-rsales').catch(function(){});
+})();
+
+// ── Preview de documentos subidos ──────────────────────
+function previewDoc(input, previewId) {
+  var el = document.getElementById(previewId);
+  if (!input.files || !input.files[0]) {
+    el.innerHTML = '';
+    return;
+  }
+  var file = input.files[0];
+  if (file.type.indexOf('image') >= 0) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      el.innerHTML = '<img src="' + e.target.result + '">' +
+        '<div class="doc-ok">✓ ' + file.name + '</div>';
+    };
+    reader.readAsDataURL(file);
+  } else {
+    el.innerHTML = '<div class="doc-ok">✓ ' + file.name + ' (' +
+      (file.size/1024).toFixed(1) + ' KB)</div>';
+  }
+}
+
+function getDocsFlags() {
+  return {
+    cedula_frontal: !!document.getElementById('doc-cedula-front').files.length,
+    cedula_posterior: !!document.getElementById('doc-cedula-back').files.length,
+    rut: !!document.getElementById('doc-rut').files.length,
+    camara_comercio: !!document.getElementById('doc-camara').files.length,
+    estados_financieros: !!document.getElementById('doc-estados').files.length,
+    declaracion_renta: !!document.getElementById('doc-renta').files.length
+  };
+}
+
+// ── Sujetos de prueba ──────────────────────────────────
+var SUBJECTS = {{ subjects_json|safe }};
+
+function renderSubjects(list) {
+  var html = '';
+  list.forEach(function(s){
+    var badges = '';
+    if (s.mora) badges += '<span class="mini-badge warn">MORA</span>';
+    if (s.castigada) badges += '<span class="mini-badge warn">CASTIGADA</span>';
+    if (s.credito_aprobado) badges += '<span class="mini-badge good">\$'+(s.credito_aprobado||0).toLocaleString('es-CO')+'</span>';
+    html += '<div class="opt" onclick="cargarSujeto(\''+s.cedula_nit+'\')">'+
+      '<b>'+escH(s.nombre)+'</b>'+badges+
+      '<div class="sub">CC '+s.cedula_nit+
+        (s.ano_dato_compras?' · Compras '+s.ano_dato_compras:'')+
+        (s.ejecutivo?' · '+s.ejecutivo:'')+
+      '</div></div>';
+  });
+  document.getElementById('subjects-options').innerHTML = html || '<div class="opt" style="color:var(--text-faint)">Sin resultados</div>';
+}
+
+function filterSubjects() {
+  var q = (document.getElementById('subj-search').value || '').toUpperCase();
+  if (!q) { renderSubjects(SUBJECTS); return; }
+  var filt = SUBJECTS.filter(function(s){
+    return (s.nombre||'').toUpperCase().indexOf(q) >= 0 || (s.cedula_nit||'').indexOf(q) >= 0;
+  });
+  renderSubjects(filt);
+}
+
+function cargarSujeto(cedula) {
+  var s = null;
+  for (var i=0; i<SUBJECTS.length; i++) {
+    if (SUBJECTS[i].cedula_nit === cedula) { s = SUBJECTS[i]; break; }
+  }
+  if (!s) return;
+  document.getElementById('cr-nombre').value = s.nombre || '';
+  document.getElementById('cr-cedula').value = s.cedula_nit || '';
+  document.getElementById('cr-tipo').value = s.tipo_solicitud || 'SOLICITUD DE CREDITO';
+  document.getElementById('cr-cactual').value = s.credito_actual || 0;
+  document.getElementById('cr-msolicitar').value = s.monto_solicitar || 0;
+  document.getElementById('cr-cinicial').value = s.cupo_inicial || 0;
+  document.getElementById('cr-pcompras').value = s.promedio_compras || 0;
+  document.getElementById('cr-cmin').value = s.compra_minima || 0;
+  document.getElementById('cr-cmax').value = s.compra_maxima || 0;
+  document.getElementById('cr-ncompras').value = s.numero_compras || 0;
+  document.getElementById('cr-ano').value = s.ano_dato_compras || 2026;
+  document.getElementById('cr-ppago').value = s.promedio_pago_dias || '';
+  document.getElementById('cr-dc').value = s.calificacion_datacredito || '';
+  document.getElementById('cr-cons6m').value = s.consultas_6m_sector_real || '';
+  document.getElementById('cr-mora').checked = !!s.presenta_mora;
+  document.getElementById('cr-castigada').checked = !!s.presenta_cartera_castigada;
+  document.getElementById('cr-aprobacion').checked = !!s.aprobacion;
+  document.getElementById('cr-obs').value = s.observaciones || '';
+  CEDULA_ACTUAL = s.cedula_nit;
+  document.getElementById('subjects-list').classList.add('hidden');
+  toast('Sujeto cargado: ' + (s.nombre||'').slice(0,40) + ' — haz clic en Evaluar');
+}
+
+renderSubjects(SUBJECTS);
+
+// ── Form submit ─────────────────────────────────────────
+document.getElementById('credito-form').addEventListener('submit', function(e){
+  e.preventDefault();
+  var fd = new FormData(this);
+  var data = {};
+  fd.forEach(function(v,k){ data[k] = v; });
+  CEDULA_ACTUAL = data.cedula || '';
+
+  document.getElementById('rsales-status').style.display = '';
+  document.getElementById('rsales-status').textContent = '⏳ Buscando en RSales…';
+
+  // Incluir flags de documentos
+  var docs = getDocsFlags();
+
+  // Construir perfil
+  fetch('/api/credit/evaluate', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      cedula_nit: data.cedula,
+      nombre: data.nombre,
+      tipo_solicitud: data.tipo_solicitud,
+      credito_actual: parseFloat(data.credito_actual) || 0,
+      monto_solicitar: parseFloat(data.monto_solicitar) || 0,
+      cupo_inicial: parseFloat(data.cupo_inicial) || 0,
+      promedio_compras: parseFloat(data.promedio_compras) || 0,
+      compra_minima: parseFloat(data.compra_minima) || 0,
+      compra_maxima: parseFloat(data.compra_maxima) || 0,
+      numero_compras: parseInt(data.numero_compras) || 0,
+      ano_dato_compras: parseInt(data.ano_dato_compras) || 2026,
+      promedio_pago_dias: parseFloat(data.promedio_pago_dias) || 0,
+      calificacion_datacredito: data.calificacion_datacredito ? parseFloat(data.calificacion_datacredito) : null,
+      consultas_6m: data.consultas_6m || '',
+      presenta_mora: document.getElementById('cr-mora').checked,
+      presenta_cartera_castigada: document.getElementById('cr-castigada').checked,
+      aprobacion: document.getElementById('cr-aprobacion').checked,
+      observaciones: data.observaciones || '',
+      docs: docs,
+    })
+  }).then(function(r){return r.json();}).then(function(d){
+    if (d.ok) {
+      RESULTADO_ACTUAL = d;
+      renderResultado(d);
+      document.getElementById('btn-descargar').style.display = 'inline-flex';
+      var rs = d.profile.fuentes && d.profile.fuentes.rsales;
+      document.getElementById('rsales-status').textContent = rs ? '✓ RSales cargado' : '(RSales no disponible para esta cédula)';
+    } else {
+      alert('Error: ' + (d.error || 'Desconocido'));
+      document.getElementById('rsales-status').style.display = 'none';
+    }
+  }).catch(function(e){
+    alert('Error: ' + e.message);
+    document.getElementById('rsales-status').style.display = 'none';
+  });
+});
+
+// ── Render resultado ────────────────────────────────────
+var RC = {'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
+function renderResultado(d) {
+  var p = d.profile;
+  var bg = RC[p.nivel_riesgo]||'#333';
+  var rsalesBlock = '';
+  if (p.detalle && p.detalle.rsales) {
+    var r = p.detalle.rsales;
+    rsalesBlock = '<div style="margin-top:16px;padding:14px;background:rgba(62,122,249,.06);border-radius:10px">'+
+      '<div style="font-weight:700;font-size:12px;color:var(--blue);margin-bottom:10px">📡 Datos RSales</div>'+
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px">'+
+        '<div><b>Cartera total</b><br>\$'+(r.cartera_total||0).toLocaleString('es-CO')+'</div>'+
+        '<div><b>Cartera vencida</b><br><span style="color:'+(r.pct_vencida>30?'#dc2626':'green')+'">\$'+(r.cartera_vencida||0).toLocaleString('es-CO')+' ('+(r.pct_vencida||0).toFixed(0)+'%)</span></div>'+
+        '<div><b>Compras total</b><br>\$'+(r.compras_total||0).toLocaleString('es-CO')+'</div>'+
+        '<div><b>Nº pedidos</b><br>'+(r.num_pedidos||0)+' · Últ: '+(r.ultima_compra||'N/A').slice(0,10)+'</div>'+
+      '</div></div>';
+  }
+  if (p.cotejo && p.cotejo.nota) {
+    rsalesBlock += '<div style="margin-top:8px;font-size:12px;padding:8px 12px;border-radius:8px;'+
+      (p.cotejo.compras_ok?'background:rgba(21,128,61,.08);color:#15803d':'background:rgba(220,38,38,.08);color:#b91c1c')+
+      ';font-weight:600">📊 Cotejo: '+escH(p.cotejo.nota)+'</div>';
+  }
+
+  var alertsHtml = (p.alertas||[]).map(function(a){return '<div style="color:#b91c1c;font-weight:600;margin:2px 0">⚠ '+escH(a)+'</div>';}).join('');
+  var posHtml = (p.factores_positivos||[]).map(function(f){return '<div style="color:#15803d;margin:2px 0">✓ '+escH(f)+'</div>';}).join('') || '<span style="color:var(--text-faint)">Ninguno</span>';
+  var negHtml = (p.factores_negativos||[]).map(function(f){return '<div style="color:#b91c1c;margin:2px 0">✗ '+escH(f)+'</div>';}).join('') || '<span style="color:var(--text-faint)">Ninguno</span>';
+
+  document.getElementById('resultado').style.display = '';
+  document.getElementById('resultado').innerHTML =
+    '<div style="display:flex;align-items:flex-start;gap:28px;flex-wrap:wrap">'+
+      '<div style="text-align:center">'+
+        '<div class="score-big" style="color:'+bg+'">'+p.score+'</div>'+
+        '<div class="score-label">Score / 1000</div>'+
+        '<div class="risk-pill" style="margin-top:10px;background:'+bg+'20;color:'+bg+'">'+p.nivel_riesgo+'</div>'+
+      '</div>'+
+      '<div style="flex:1;min-width:200px">'+
+        '<div style="font-weight:700;font-size:16px;margin-bottom:4px">'+escH(p.recomendacion)+'</div>'+
+        '<div style="font-size:13px;color:var(--text-dim)">Monto máximo recomendado: <b>\$'+(p.monto_maximo_recomendado||0).toLocaleString('es-CO')+'</b></div>'+
+        alertsHtml +
+      '</div>'+
+    '</div>'+
+    '<div class="stats">'+
+      '<div><div class="stat-val" style="color:'+bg+'">'+(p.detalle&&p.detalle.excel?('\$'+(p.detalle.excel.promedio_compras||0).toLocaleString('es-CO')):'—')+'</div><div class="stat-lbl">Promedio compras</div></div>'+
+      '<div><div class="stat-val">'+(p.detalle&&p.detalle.excel?(p.detalle.excel.numero_compras||0):'—')+'</div><div class="stat-lbl">Nº compras</div></div>'+
+      '<div><div class="stat-val">'+(p.detalle&&p.detalle.excel?(p.detalle.excel.promedio_pago_dias||'—'):'—')+'</div><div class="stat-lbl">Promedio pago (días)</div></div>'+
+      '<div><div class="stat-val">'+(p.detalle&&p.detalle.excel&&p.detalle.excel.calificacion_datacredito!=null?p.detalle.excel.calificacion_datacredito:'—')+'</div><div class="stat-lbl">Datacrédito</div></div>'+
+    '</div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:18px">'+
+      '<div><div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#15803d">✓ Factores positivos</div>'+posHtml+'</div>'+
+      '<div><div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#b91c1c">✗ Factores negativos</div>'+negHtml+'</div>'+
+    '</div>'+
+    rsalesBlock;
+}
+
+// ── Descargar Excel ─────────────────────────────────────
+function descargarExcel() {
+  if (!CEDULA_ACTUAL || !RESULTADO_ACTUAL) return;
+  var p = RESULTADO_ACTUAL.profile;
+  var csv = 'Campo,Valor\\n';
+  csv += 'Nombre,'+(p.nombre||'')+'\\n';
+  csv += 'Cédula/NIT,'+(p.cedula_nit||'')+'\\n';
+  csv += 'Score,'+(p.score||0)+'\\n';
+  csv += 'Nivel de riesgo,'+(p.nivel_riesgo||'')+'\\n';
+  csv += 'Recomendación,'+(p.recomendacion||'')+'\\n';
+  csv += 'Monto máximo recomendado,'+(p.monto_maximo_recomendado||0)+'\\n';
+  if (p.detalle && p.detalle.excel) {
+    var e = p.detalle.excel;
+    csv += 'Crédito actual,'+(e.credito_actual||0)+'\\n';
+    csv += 'Monto solicitado,'+(e.monto_solicitado||0)+'\\n';
+    csv += 'Cupo inicial,'+(e.cupo_inicial||0)+'\\n';
+    csv += 'Promedio compras,'+(e.promedio_compras||0)+'\\n';
+    csv += 'Compra mínima,'+(e.compra_minima||0)+'\\n';
+    csv += 'Compra máxima,'+(e.compra_maxima||0)+'\\n';
+    csv += 'Número compras,'+(e.numero_compras||0)+'\\n';
+    csv += 'Promedio pago días,'+(e.promedio_pago_dias||0)+'\\n';
+    csv += 'Calificación datacrédito,'+(e.calificacion_datacredito||'')+'\\n';
+    csv += 'Mora,'+(e.presenta_mora?'Sí':'No')+'\\n';
+    csv += 'Cartera castigada,'+(e.cartera_castigada?'Sí':'No')+'\\n';
+  }
+  if (p.alertas && p.alertas.length) csv += 'Alertas,"'+p.alertas.join('; ')+'"\\n';
+  if (p.factores_negativos && p.factores_negativos.length) csv += 'Factores negativos,"'+p.factores_negativos.join('; ')+'"\\n';
+  var blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'perfil_crediticio_'+(p.cedula_nit||'cliente')+'.csv';
+  a.click();
+}
+
+function limpiarForm() {
+  document.getElementById('credito-form').reset();
+  document.getElementById('resultado').style.display = 'none';
+  document.getElementById('btn-descargar').style.display = 'none';
+  document.getElementById('rsales-status').style.display = 'none';
+  CEDULA_ACTUAL = ''; RSALES_DATA = null; RESULTADO_ACTUAL = null;
+}
+
+function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+function toast(msg){ var t=document.createElement('div'); t.className='toast show'; t.innerHTML='<span class="dot"></span>'+msg;
+  document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
+</script>
+""" + ui_theme.SHELL_CLOSE
+
+
+@app.route("/credito")
+def credito_page():
+    """Página de perfil crediticio con formulario y evaluación."""
+    from excel_reader import read_all
+    import json as _json
+
+    # Preparar sujetos de prueba del Excel para el frontend
+    data = read_all()
+    subjects = []
+    for c in data["clientes"]:
+        subjects.append({
+            "cedula_nit": c.get("cedula_nit", ""),
+            "nombre": c.get("nombre_cliente", ""),
+            "tipo_solicitud": c.get("tipo_solicitud", ""),
+            "credito_actual": c.get("credito_actual"),
+            "monto_solicitar": c.get("monto_solicitar"),
+            "cupo_inicial": c.get("cupo_inicial"),
+            "promedio_compras": c.get("promedio_compras"),
+            "compra_minima": c.get("compra_minima"),
+            "compra_maxima": c.get("compra_maxima"),
+            "numero_compras": c.get("numero_compras"),
+            "ano_dato_compras": c.get("ano_dato_compras"),
+            "promedio_pago_dias": c.get("promedio_pago_dias"),
+            "calificacion_datacredito": c.get("calificacion_datacredito"),
+            "consultas_6m_sector_real": str(c.get("consultas_6m_sector_real", "")),
+            "presenta_mora": c.get("presenta_mora") is True,
+            "presenta_cartera_castigada": c.get("presenta_cartera_castigada") is True,
+            "aprobacion": c.get("aprobacion") is True,
+            "credito_aprobado": c.get("credito_aprobado") or c.get("monto_credito_aprobado"),
+            "observaciones": c.get("observaciones", ""),
+            "ejecutivo": c.get("ejecutivo", ""),
+            "mora": c.get("presenta_mora") is True,
+            "castigada": c.get("presenta_cartera_castigada") is True,
+        })
+
+    return render_template_string(
+        CREDITO_TEMPLATE,
+        subjects_json=_json.dumps(subjects, ensure_ascii=False),
+    )
+
+
+@app.route("/api/credit/warm-rsales")
+def api_credit_warm_rsales():
+    """Pre-calienta el cache de clientes RSales."""
+    try:
+        from rsales_client import _get_customer_index
+        idx = _get_customer_index()
+        return {"ok": True, "cached": len(idx)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.route("/api/credit/evaluate", methods=["POST"])
+def api_credit_evaluate():
+    """Evalúa el riesgo crediticio a partir de los datos del formulario.
+
+    Recibe JSON con todos los campos del formulario.
+    SIEMPRE intenta cargar datos de RSales automáticamente.
+    """
+    from flask import jsonify
+    from credit_risk import build_credit_profile
+
+    data = request.get_json(silent=True) or {}
+    cedula = data.get("cedula_nit", "")
+    if not cedula:
+        return jsonify({"ok": False, "error": "Cédula/NIT requerido"}), 400
+
+    # Construir datos tipo Excel desde el formulario
+    excel_data = {
+        "nombre_cliente": data.get("nombre", ""),
+        "cedula_nit": cedula,
+        "tipo_solicitud": data.get("tipo_solicitud", ""),
+        "credito_actual": data.get("credito_actual"),
+        "monto_solicitar": data.get("monto_solicitar"),
+        "cupo_inicial": data.get("cupo_inicial"),
+        "promedio_compras": data.get("promedio_compras"),
+        "compra_minima": data.get("compra_minima"),
+        "compra_maxima": data.get("compra_maxima"),
+        "numero_compras": data.get("numero_compras"),
+        "ano_dato_compras": data.get("ano_dato_compras"),
+        "promedio_pago_dias": data.get("promedio_pago_dias"),
+        "calificacion_datacredito": data.get("calificacion_datacredito"),
+        "consultas_6m_sector_real": data.get("consultas_6m", ""),
+        "presenta_mora": data.get("presenta_mora", False),
+        "presenta_cartera_castigada": data.get("presenta_cartera_castigada", False),
+        "aprobacion": data.get("aprobacion", False),
+        "observaciones": data.get("observaciones", ""),
+    }
+
+    # RSales: intentar siempre, sin errores si no está disponible
+    rsales_profile = None
+    try:
+        from rsales_client import find_customer_in_rsales, get_rsales_client
+        cust = find_customer_in_rsales(cedula)
+        if cust:
+            rsales = get_rsales_client()
+            rsales_profile = rsales.get_customer_financial_profile(cust["code"])
+    except Exception as e:
+        log.info("RSales no disponible para %s: %s", cedula, e)
+
+    profile = build_credit_profile(
+        cedula_nit=cedula,
+        nombre=data.get("nombre", ""),
+        rsales_profile=rsales_profile,
+        excel_data=excel_data,
+        docs=data.get("docs"),
+    )
+
+    return jsonify({
+        "ok": True,
+        "profile": {
+            "cedula_nit": profile.cedula_nit,
+            "nombre": profile.nombre,
+            "score": profile.score,
+            "nivel_riesgo": profile.nivel_riesgo,
+            "recomendacion": profile.recomendacion,
+            "monto_maximo_recomendado": profile.monto_maximo_recomendado,
+            "alertas": profile.alertas,
+            "factores_positivos": profile.factores_positivos,
+            "factores_negativos": profile.factores_negativos,
+            "fuentes": {
+                "rsales": profile.rsales_disponible,
+                "excel": profile.excel_disponible,
+            },
+            "docs": {
+                "cedula_frontal": profile.docs_cedula_frontal,
+                "cedula_posterior": profile.docs_cedula_posterior,
+                "rut": profile.docs_rut,
+                "camara_comercio": profile.docs_camara_comercio,
+                "estados_financieros": profile.docs_estados_financieros,
+                "declaracion_renta": profile.docs_declaracion_renta,
+            },
+            "detalle": {
+                "rsales": {
+                    "cartera_total": profile.rsales_cartera_total,
+                    "cartera_vencida": profile.rsales_cartera_vencida,
+                    "pct_vencida": profile.rsales_pct_vencida,
+                    "dias_mora_max": profile.rsales_dias_mora_max,
+                    "compras_total": profile.rsales_compras_total,
+                    "num_pedidos": profile.rsales_num_pedidos,
+                    "ultima_compra": profile.rsales_ultima_compra_fecha,
+                } if profile.rsales_disponible else None,
+                "excel": {
+                    "promedio_compras": profile.excel_promedio_compras,
+                    "compra_minima": profile.excel_compra_minima,
+                    "compra_maxima": profile.excel_compra_maxima,
+                    "numero_compras": profile.excel_numero_compras,
+                    "promedio_pago_dias": profile.excel_promedio_pago_dias,
+                    "calificacion_datacredito": profile.excel_calificacion_datacredito,
+                    "credito_actual": profile.excel_credito_actual,
+                    "monto_solicitado": profile.excel_monto_solicitado,
+                    "cupo_inicial": profile.excel_cupo_inicial,
+                    "presenta_mora": profile.excel_presenta_mora,
+                    "cartera_castigada": profile.excel_cartera_castigada,
+                },
+            },
+            "cotejo": {
+                "compras_ok": profile.cotejo_compras_ok,
+                "compras_diff_pct": profile.cotejo_compras_diff_pct,
+                "nota": profile.cotejo_nota,
+            } if profile.rsales_disponible and profile.excel_disponible and profile.cotejo_nota else None,
+        },
+    })
+
+
+# ==============================================================
+#  API de Perfil Crediticio — VerifyData Credit Risk
+# ==============================================================
+# Combina RSALES API + Excel BITACORA para evaluar riesgo crediticio.
+# Endpoints:
+#   GET  /api/credit/profile/<cedula>       — Perfil crediticio completo
+#   GET  /api/credit/check/<cedula>          — Evaluación rápida (score + recomendación)
+#   POST /api/credit/cross-reference          — Cotejo masivo Excel vs RSales
+#   GET  /api/credit/rsales/<client_code>     — Datos crudos de RSales
+#   GET  /api/credit/excel-clientes           — Lista de clientes del Excel
+# ==============================================================
+
+@app.route("/api/credit/profile/<cedula>")
+def api_credit_profile(cedula: str):
+    """Perfil crediticio completo: RSales + Excel + score + alertas.
+
+    Parámetros:
+      ?rsales=1    — Incluir datos de RSales (más lento, ~2-3s extra)
+      ?nombre=X    — Nombre del cliente
+    """
+    from flask import jsonify, request
+    from credit_risk import build_credit_profile
+    from excel_reader import get_client_by_cedula
+    from rsales_client import find_customer_in_rsales, get_rsales_client
+
+    nombre = request.args.get("nombre", "")
+    fetch_rsales = request.args.get("rsales") == "1"
+
+    try:
+        excel_data = get_client_by_cedula(cedula)
+
+        rsales_profile = None
+        if fetch_rsales:
+            try:
+                cust = find_customer_in_rsales(cedula)
+                if cust:
+                    rsales = get_rsales_client()
+                    rsales_profile = rsales.get_customer_financial_profile(
+                        cust["code"]
+                    )
+            except Exception as e:
+                log.warning("RSales no disponible para %s: %s", cedula, e)
+
+        profile = build_credit_profile(
+            cedula_nit=cedula,
+            nombre=nombre,
+            rsales_profile=rsales_profile,
+            excel_data=excel_data,
+        )
+
+        return jsonify({
+            "ok": True,
+            "profile": {
+                "cedula_nit": profile.cedula_nit,
+                "nombre": profile.nombre,
+                "tipo_persona": profile.tipo_persona,
+                "score": profile.score,
+                "nivel_riesgo": profile.nivel_riesgo,
+                "recomendacion": profile.recomendacion,
+                "monto_maximo_recomendado": profile.monto_maximo_recomendado,
+                "alertas": profile.alertas,
+                "factores_positivos": profile.factores_positivos,
+                "factores_negativos": profile.factores_negativos,
+                "fuentes": {
+                    "rsales": profile.rsales_disponible,
+                    "excel": profile.excel_disponible,
+                },
+                "cotejo": {
+                    "compras_ok": profile.cotejo_compras_ok,
+                    "compras_diff_pct": profile.cotejo_compras_diff_pct,
+                    "nota": profile.cotejo_nota,
+                } if profile.rsales_disponible and profile.excel_disponible else None,
+                "detalle": {
+                    "rsales": {
+                        "cartera_total": profile.rsales_cartera_total,
+                        "cartera_vencida": profile.rsales_cartera_vencida,
+                        "pct_vencida": profile.rsales_pct_vencida,
+                        "dias_mora_max": profile.rsales_dias_mora_max,
+                        "compras_total": profile.rsales_compras_total,
+                        "num_pedidos": profile.rsales_num_pedidos,
+                        "promedio_pedido": profile.rsales_promedio_pedido,
+                        "ultima_compra": profile.rsales_ultima_compra_fecha,
+                        "frecuencia_meses": profile.rsales_frecuencia_meses,
+                    } if profile.rsales_disponible else None,
+                    "excel": {
+                        "credito_actual": profile.excel_credito_actual,
+                        "monto_solicitado": profile.excel_monto_solicitado,
+                        "cupo_inicial": profile.excel_cupo_inicial,
+                        "credito_aprobado": profile.excel_credito_aprobado,
+                        "promedio_compras": profile.excel_promedio_compras,
+                        "compra_minima": profile.excel_compra_minima,
+                        "compra_maxima": profile.excel_compra_maxima,
+                        "numero_compras": profile.excel_numero_compras,
+                        "promedio_pago_dias": profile.excel_promedio_pago_dias,
+                        "calificacion_datacredito": profile.excel_calificacion_datacredito,
+                        "presenta_mora": profile.excel_presenta_mora,
+                        "cartera_castigada": profile.excel_cartera_castigada,
+                        "aprobacion": profile.excel_aprobacion,
+                    } if profile.excel_disponible else None,
+                },
+            },
+            "timestamp": profile.timestamp,
+        })
+    except Exception as e:
+        log.exception("Error en credit_profile para %s", cedula)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/check/<cedula>")
+def api_credit_check(cedula: str):
+    """Evaluación rápida: solo score, nivel de riesgo y recomendación.
+
+    Parámetros:
+      ?rsales=1    — Incluir datos de RSales (más lento, ~2-3s extra)
+      ?nombre=X    — Nombre del cliente
+    Por defecto solo usa datos del Excel BITACORA (respuesta instantánea).
+    """
+    from flask import jsonify, request
+    from credit_risk import build_credit_profile
+    from excel_reader import get_client_by_cedula
+    from rsales_client import find_customer_in_rsales, get_rsales_client
+
+    nombre = request.args.get("nombre", "")
+    fetch_rsales = request.args.get("rsales") == "1"
+
+    try:
+        excel_data = get_client_by_cedula(cedula)
+
+        rsales_profile = None
+        rsales_available = False
+        if fetch_rsales:
+            try:
+                cust = find_customer_in_rsales(cedula)
+                if cust:
+                    rsales = get_rsales_client()
+                    rsales_profile = rsales.get_customer_financial_profile(
+                        cust["code"]
+                    )
+                    rsales_available = True
+            except Exception as e:
+                log.warning("RSales no disponible: %s", e)
+
+        profile = build_credit_profile(
+            cedula_nit=cedula,
+            nombre=nombre,
+            rsales_profile=rsales_profile,
+            excel_data=excel_data,
+        )
+
+        return jsonify({
+            "ok": True,
+            "cedula_nit": cedula,
+            "nombre": profile.nombre,
+            "score": profile.score,
+            "nivel_riesgo": profile.nivel_riesgo,
+            "recomendacion": profile.recomendacion,
+            "monto_maximo": profile.monto_maximo_recomendado,
+            "alertas": profile.alertas,
+            "factores_positivos": profile.factores_positivos,
+            "factores_negativos": profile.factores_negativos,
+            "fuentes": {
+                "rsales": profile.rsales_disponible,
+                "excel": profile.excel_disponible,
+            },
+        })
+    except Exception as e:
+        log.exception("Error en credit_check para %s", cedula)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/cross-reference", methods=["GET", "POST"])
+def api_credit_cross_reference():
+    """Cotejo masivo: todos los clientes del Excel vs RSales.
+
+    GET: devuelve resultados cacheados (si existen).
+    POST: fuerza re-ejecución y devuelve resumen.
+    """
+    from flask import jsonify
+    from credit_risk import cross_reference_all_excel_with_rsales
+
+    force = request.method == "POST" or request.args.get("force") == "1"
+
+    try:
+        result = cross_reference_all_excel_with_rsales()
+
+        return jsonify({
+            "ok": True,
+            "resumen": {
+                "total_excel": result["total_excel"],
+                "total_rsales": result["total_rsales"],
+                "encontrados_en_rsales": result["encontrados_en_rsales"],
+                "no_encontrados": result["no_encontrados_en_rsales"],
+                "pct_cobertura": result["pct_cobertura"],
+                "discrepancias": result["discrepancias"],
+            },
+            "encontrados": result["matched"][:100],
+            "no_encontrados": result["not_found"][:50],
+            "discrepancias_detalle": result["discrepancies_detail"],
+            "timestamp": result["timestamp"],
+        })
+    except Exception as e:
+        log.exception("Error en cross-reference")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/rsales/<client_code>")
+def api_credit_rsales_profile(client_code: str):
+    """Perfil crudo desde RSales para un cliente (código de cliente)."""
+    from flask import jsonify
+    from rsales_client import get_rsales_client
+
+    try:
+        rsales = get_rsales_client()
+        profile = rsales.get_customer_financial_profile(client_code)
+        return jsonify({"ok": True, "profile": profile})
+    except Exception as e:
+        log.exception("Error en rsales_profile para %s", client_code)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/excel-clientes")
+def api_credit_excel_clientes():
+    """Lista todos los clientes del Excel BITACORA con datos relevantes."""
+    from flask import jsonify
+    from excel_reader import read_all
+
+    try:
+        data = read_all()
+        clientes_resumen = []
+        for c in data["clientes"]:
+            clientes_resumen.append({
+                "cedula_nit": c.get("cedula_nit"),
+                "nombre": c.get("nombre_cliente"),
+                "tipo_solicitud": c.get("tipo_solicitud"),
+                "credito_actual": c.get("credito_actual"),
+                "monto_solicitado": c.get("monto_solicitar"),
+                "cupo_inicial": c.get("cupo_inicial"),
+                "credito_aprobado": c.get("credito_aprobado") or c.get(
+                    "monto_credito_aprobado"
+                ),
+                "promedio_compras": c.get("promedio_compras"),
+                "numero_compras": c.get("numero_compras"),
+                "promedio_pago_dias": c.get("promedio_pago_dias"),
+                "calificacion_datacredito": c.get("calificacion_datacredito"),
+                "presenta_mora": c.get("presenta_mora"),
+                "cartera_castigada": c.get("presenta_cartera_castigada"),
+                "aprobacion": c.get("aprobacion"),
+                "ejecutivo": c.get("ejecutivo"),
+                "observaciones": c.get("observaciones"),
+            })
+
+        return jsonify({
+            "ok": True,
+            "total": len(clientes_resumen),
+            "clientes": clientes_resumen,
+        })
+    except Exception as e:
+        log.exception("Error leyendo Excel")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ==============================================================
+#  Main
+# ==============================================================
+
+if __name__ == "__main__":
+    import os
+    host = os.environ.get("HOST", CFG["webapp"]["host"])
+    port = int(os.environ.get("PORT", CFG["webapp"]["port"]))
+    debug = CFG["webapp"].get("debug", False)
+    n = len(registry.all_sources())
+    from db import is_postgres
+    _db_backend = "PostgreSQL (pool)" if is_postgres() else f"SQLite ({DB_PATH})"
+    print(f"\n  VerifyData Demo → http://{host}:{port}")
+    print(f"  API REST      → http://{host}:{port}/api/v1")
+    print(f"  API Docs      → http://{host}:{port}/api/v1/docs")
+    print(f"  Fuentes registradas: {n}")
+    print(f"  Base de datos: {_db_backend}")
+    _api_keys = CFG.get("api", {}).get("keys") or []
+    _is_dev = os.environ.get("VERIFYDATA_ENV", "").strip().lower() in (
+        "dev", "development", "local")
+    if _api_keys:
+        _api_auth = "API key requerida"
+    elif _is_dev:
+        _api_auth = "ABIERTA (sin key — solo dev, VERIFYDATA_ENV=dev)"
+    else:
+        _api_auth = "CERRADA (sin key en prod — define VERIFYDATA_API_KEYS)"
+    print(f"  API auth: {_api_auth}")
+    print(f"  Captcha solver: {SOLVER.name} ({'activo' if SOLVER.is_available() else 'sin servicio — muestra aviso'})\n")
+    # Servicio MULTI-USUARIO: preferir waitress (servidor WSGI de producción,
+    # multi-hilo) si está instalado; si no, usar el server de Flask en modo
+    # threaded=True para atender polling + descargas concurrentes sin
+    # serializar. Instalar producción: `pip install waitress`.
+    try:
+        from waitress import serve
+        threads = int(os.environ.get("VERIFYDATA_HTTP_THREADS", "16"))
+        print(f"  Servidor: waitress ({threads} hilos)\n")
+        serve(app, host=host, port=port, threads=threads)
+    except ImportError:
+        print("  Servidor: Flask dev (threaded). Para producción: pip install waitress\n")
+        app.run(host=host, port=port, debug=debug, threaded=True)
