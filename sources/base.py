@@ -32,9 +32,12 @@ def get_data_path() -> Path:
         p = Path("/tmp/data")
     else:
         p = Path(__file__).parent.parent / "data"
-    p.mkdir(parents=True, exist_ok=True)
-    (p / "screenshots").mkdir(parents=True, exist_ok=True)
-    (p / "certs").mkdir(parents=True, exist_ok=True)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "screenshots").mkdir(parents=True, exist_ok=True)
+        (p / "certs").mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # Read-only filesystem in Vercel
     return p
 
 DATA = get_data_path()

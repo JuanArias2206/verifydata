@@ -18,10 +18,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # ── Vercel-specific env overrides ──────────────────────────────────
-os.environ.setdefault("VERIFYDATA_ENV", "production")
-os.environ.setdefault("LOGIN_DISABLED", "1")
-os.environ.setdefault("HOST", "0.0.0.0")
-os.environ.setdefault("PORT", "8080")
+os.environ["VERIFYDATA_ENV"] = "production"
+os.environ["LOGIN_DISABLED"] = "1"
+os.environ["HOST"] = "0.0.0.0"
+os.environ["PORT"] = "8080"
 
 # Usar /tmp para SQLite (único directorio escribible en Vercel serverless)
 _tmp_db = Path("/tmp/verifydata.db")
