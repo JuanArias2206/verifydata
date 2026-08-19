@@ -1,12 +1,10 @@
 {
-  "buildCommand": "pip install -r requirements-vercel.txt",
   "installCommand": "pip install -r requirements-vercel.txt",
   "framework": null,
   "functions": {
-    "api/**/*.py": {
+    "api/index.py": {
       "memory": 1024,
-      "maxDuration": 60,
-      "runtime": "python3.11"
+      "maxDuration": 60
     }
   },
   "rewrites": [
@@ -26,6 +24,5 @@
     "VERIFYDATA_ENV": "production",
     "LOGIN_DISABLED": "1",
     "PYTHONUNBUFFERED": "1"
-  },
-  "outputDirectory": "static"
+  }
 }
