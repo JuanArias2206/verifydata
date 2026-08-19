@@ -2777,31 +2777,69 @@ RESULTS_404_TEMPLATE = ui_theme.head_open("VerifyData — Resultado no encontrad
 
 
 RESULTS_TEMPLATE = ui_theme.head_open("VerifyData — Resultado Crediticio") + \
-    ui_theme.shell_open("credito", "Resultado delanálisis", "") + """
+    ui_theme.shell_open("credito", "Resultado del análisis", "") + """
 <style>{% raw %}
-  .res-hero{display:flex;align-items:center;justify-content:space-between;padding:24px;border-radius:14px;margin-bottom:20px}
-  .res-score{font-size:72px;font-weight:800;line-height:1}
-  .res-score-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.7;margin-top:4px}
-  .res-tag{display:inline-block;padding:8px 20px;border-radius:20px;font-size:14px;font-weight:700;letter-spacing:.03em}
-  .res-section{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px}
-  .res-section h3{font-size:14px;font-weight:700;margin:0 0 14px;display:flex;align-items:center;gap:8px}
-  .res-grid{display:grid;gap:10px}
-  .res-grid-4{grid-template-columns:repeat(4,1fr)}
-  .res-grid-3{grid-template-columns:repeat(3,1fr)}
-  .res-grid-2{grid-template-columns:1fr 1fr}
-  .res-card{padding:12px;background:rgba(0,0,0,.02);border-radius:8px}
-  .res-card .label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);margin-bottom:4px}
-  .res-card .value{font-size:18px;font-weight:700}
-  .res-ant{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:8px;margin-bottom:6px;font-size:13px;border:1px solid var(--line)}
-  .res-ant .icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
-  .res-ant .icon.ok{background:rgba(34,197,94,.1);color:#15803d}
-  .res-ant .icon.bad{background:rgba(220,38,38,.1);color:#dc2626}
-  .res-ant .icon.warn{background:rgba(217,119,6,.1);color:#d97706}
-  .res-factor{display:flex;align-items:start;gap:8px;font-size:12px;margin-bottom:6px}
-  .res-factor .dot{width:6px;height:6px;border-radius:50%;margin-top:5px;flex-shrink:0}
-  .res-just{padding:14px;background:rgba(105,65,244,.04);border:1px solid rgba(105,65,244,.15);border-radius:10px;font-size:13px;line-height:1.6;margin-top:12px}
-  .res-just b{color:#6941f4}
-  @media(max-width:800px){.res-grid-4{grid-template-columns:1fr 1fr}.res-grid-3{grid-template-columns:1fr}.res-grid-2{grid-template-columns:1fr}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .ri{animation:fadeIn .4s ease both}
+  .ri-d1{animation-delay:.1s}.ri-d2{animation-delay:.2s}.ri-d3{animation-delay:.3s}.ri-d4{animation-delay:.4s}
+
+  .hero{position:relative;overflow:hidden;border-radius:16px;padding:32px;margin-bottom:24px;color:#fff}
+  .hero::before{content:'';position:absolute;top:-50%;right:-20%;width:400px;height:400px;border-radius:50%;background:rgba(255,255,255,.06);pointer-events:none}
+  .hero::after{content:'';position:absolute;bottom:-30%;left:-10%;width:300px;height:300px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none}
+  .hero .tag{display:inline-block;padding:6px 16px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:.04em;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);margin-bottom:12px}
+  .hero .name{font-size:28px;font-weight:800;margin-bottom:4px;text-shadow:0 1px 2px rgba(0,0,0,.2)}
+  .hero .sub{font-size:13px;opacity:.85}
+  .hero .score-ring{width:120px;height:120px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(255,255,255,.15);backdrop-filter:blur(8px);border:3px solid rgba(255,255,255,.3)}
+  .hero .score-num{font-size:42px;font-weight:800;line-height:1}
+  .hero .score-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.08em;opacity:.8}
+  .hero .verdict{padding:10px 24px;border-radius:12px;font-size:16px;font-weight:800;text-align:center;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);min-width:140px}
+  .hero .verdict .icon{font-size:28px;display:block;margin-bottom:2px}
+
+  .kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center;position:relative;overflow:hidden}
+  .kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+  .kpi .icon{font-size:20px;margin-bottom:6px}
+  .kpi .val{font-size:22px;font-weight:800;margin-bottom:2px}
+  .kpi .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint)}
+
+  .sec{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px}
+  .sec-title{font-size:14px;font-weight:700;margin:0 0 16px;display:flex;align-items:center;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+  .sec-title .badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;background:rgba(0,0,0,.05)}
+
+  .ant-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:10px;margin-bottom:8px;border:1px solid var(--line);transition:all .15s}
+  .ant-row:hover{border-color:rgba(0,0,0,.12);box-shadow:0 2px 8px rgba(0,0,0,.04)}
+  .ant-icon{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;font-weight:700}
+  .ant-icon.g{background:rgba(34,197,94,.1);color:#15803d}
+  .ant-icon.r{background:rgba(220,38,38,.1);color:#dc2626}
+  .ant-icon.y{background:rgba(217,119,6,.1);color:#d97706}
+  .ant-info{flex:1}
+  .ant-name{font-weight:700;font-size:13px}
+  .ant-desc{font-size:11px;color:var(--text-faint);margin-top:2px}
+  .ant-badge{font-size:10px;font-weight:700;padding:3px 10px;border-radius:12px;letter-spacing:.03em}
+  .ant-badge.clean{background:rgba(34,197,94,.1);color:#15803d}
+  .ant-badge.hit{background:rgba(220,38,38,.1);color:#dc2626}
+  .ant-badge.err{background:rgba(217,119,6,.1);color:#d97706}
+
+  .factor-row{display:flex;align-items:start;gap:10px;padding:8px 0;font-size:13px;border-bottom:1px solid rgba(0,0,0,.04)}
+  .factor-row:last-child{border:none}
+  .factor-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0}
+
+  .just-box{background:linear-gradient(135deg,rgba(105,65,244,.06),rgba(62,122,249,.06));border:1px solid rgba(105,65,244,.15);border-radius:12px;padding:20px;margin-top:12px}
+  .just-box .title{font-size:12px;font-weight:700;color:#6941f4;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+  .just-box .formula{font-family:monospace;font-size:13px;background:rgba(0,0,0,.04);padding:10px 14px;border-radius:8px;margin-top:10px;line-height:1.8}
+
+  .block-alert{background:linear-gradient(135deg,rgba(220,38,38,.06),rgba(220,38,38,.02));border:2px solid rgba(220,38,38,.2);border-radius:12px;padding:20px;margin-bottom:16px}
+  .block-alert .title{font-size:14px;font-weight:700;color:#dc2626;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .block-item{padding:10px 14px;background:rgba(220,38,38,.04);border-radius:8px;margin-bottom:6px;font-size:13px;color:#991b1b;border-left:3px solid #dc2626}
+
+  .doc-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .doc-item{padding:12px;border-radius:10px;text-align:center;font-size:12px;font-weight:600;border:1px solid var(--line);transition:all .15s}
+  .doc-item.yes{background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.2);color:#15803d}
+  .doc-item.no{background:rgba(0,0,0,.01);color:var(--text-faint)}
+  .doc-item .doc-icon{font-size:20px;margin-bottom:4px}
+
+  .actions{display:flex;gap:12px;margin-top:24px;justify-content:center;padding:20px 0}
+  @media(max-width:800px){.kpi-row{grid-template-columns:1fr 1fr}.doc-grid{grid-template-columns:1fr 1fr}.hero{flex-direction:column;gap:20px;text-align:center}}
 {% endraw %}</style>
 
 <div class="main-content" id="app"></div>
@@ -2809,154 +2847,134 @@ RESULTS_TEMPLATE = ui_theme.head_open("VerifyData — Resultado Crediticio") + \
 <script>
 var DATA = {{ result_json|safe }};
 
-function render() {
-  var r = DATA;
-  var p = r.perfil_crediticio;
-  var ant = r.antecedentes || {};
-  var res = r.resumen_ejecutivo;
-  var docs = p.docs || {};
-
-  var colors = {'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
-  var color = colors[p.nivel_riesgo] || '#333';
-  var tagBg = res.aprobado ? '#15803d' : '#dc2626';
-  var tagTxt = res.aprobado ? 'APROBADO' : 'RECHAZADO';
-
-  var html = '';
+function $(id){return document.getElementById(id)}
+function render(){
+  var r=DATA, p=r.perfil_crediticio, ant=r.antecedentes||{}, res=r.resumen_ejecutivo, docs=p.docs||{};
+  var C={'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
+  var c=C[p.nivel_riesgo]||'#333';
+  var ok=res.aprobado, tagBg=ok?'rgba(34,197,94,.9)':'rgba(220,38,38,.9)';
+  var tagIcon=ok?'&#10003;':'&#10007;';
+  var tagTxt=ok?'APROBADO':'RECHAZADO';
+  var h='';
 
   // ═══ HERO ═══
-  html += '<div class="res-hero" style="background:linear-gradient(135deg,'+color+'15,'+color+'08);border:2px solid '+color+'">';
-  html += '  <div>';
-  html += '    <div style="font-size:11px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Análisis Integral de Riesgo Crediticio</div>';
-  html += '    <div style="font-size:24px;font-weight:800">'+escH(r.nombre)+'</div>';
-  html += '    <div style="font-size:13px;color:var(--text-faint)">CC/NIT: '+escH(r.cedula_nit)+' · '+new Date().toLocaleDateString('es-CO')+'</div>';
-  html += '  </div>';
-  html += '  <div style="text-align:center">';
-  html += '    <div class="res-score" style="color:'+color+'">'+p.score+'</div>';
-  html += '    <div class="res-score-label">Score / 1000</div>';
-  html += '  </div>';
-  html += '  <div style="text-align:center">';
-  html += '    <div class="res-tag" style="background:'+tagBg+';color:#fff">'+tagTxt+'</div>';
-  html += '    <div style="font-size:12px;margin-top:6px;color:var(--text-faint)">'+escH(p.nivel_riesgo)+'</div>';
-  html += '  </div>';
-  html += '</div>';
+  h+='<div class="hero ri" style="background:linear-gradient(135deg,'+c+','+c+'cc)">';
+  h+='  <div><div class="tag">ANALISIS INTEGRAL DE RIESGO CREDITICIO</div>';
+  h+='  <div class="name">'+esc(r.nombre)+'</div>';
+  h+='  <div class="sub">CC/NIT: '+esc(r.cedula_nit)+' &middot; '+new Date().toLocaleDateString('es-CO',{day:'2-digit',month:'long',year:'numeric'})+'</div></div>';
+  h+='  <div class="score-ring"><div class="score-num">'+p.score+'</div><div class="score-lbl">Score / 1000</div></div>';
+  h+='  <div class="verdict"><div class="icon">'+tagIcon+'</div>'+tagTxt+'<div style="font-size:11px;font-weight:400;opacity:.8;margin-top:2px">'+esc(p.nivel_riesgo)+'</div></div>';
+  h+='</div>';
 
-  // ═══ RESUMEN RÁPIDO ═══
-  html += '<div class="res-grid res-grid-4" style="margin-bottom:16px">';
-  html += '  <div class="res-card"><div class="label">Score crediticio</div><div class="value" style="color:'+color+'">'+p.score+'</div></div>';
-  html += '  <div class="res-card"><div class="label">Nivel de riesgo</div><div class="value" style="color:'+color+'">'+escH(p.nivel_riesgo)+'</div></div>';
-  html += '  <div class="res-card"><div class="label">Recomendación</div><div class="value" style="font-size:13px">'+escH(p.recomendacion)+'</div></div>';
-  html += '  <div class="res-card"><div class="label">Monto máximo</div><div class="value" style="color:#6941f4">$'+Number(res.monto_maximo||0).toLocaleString('es-CO')+'</div></div>';
-  html += '</div>';
+  // ═══ KPIs ═══
+  h+='<div class="kpi-row ri ri-d1">';
+  h+='  <div class="kpi" style="border-top:3px solid '+c+'"><div class="icon">&#127919;</div><div class="val" style="color:'+c+'">'+p.score+'</div><div class="lbl">Score Crediticio</div></div>';
+  h+='  <div class="kpi" style="border-top:3px solid '+c+'"><div class="icon">&#128200;</div><div class="val" style="color:'+c+';font-size:16px">'+esc(p.nivel_riesgo)+'</div><div class="lbl">Nivel de Riesgo</div></div>';
+  var montoTxt=Number(res.monto_maximo||0)>0?'$'+Number(res.monto_maximo).toLocaleString('es-CO'):'No calculable';
+  h+='  <div class="kpi" style="border-top:3px solid #6941f4"><div class="icon">&#128176;</div><div class="val" style="color:#6941f4;font-size:18px">'+montoTxt+'</div><div class="lbl">Monto Max Recomendado</div></div>';
+  var antCount=Object.keys(ant).length;
+  var cleanCount=0; for(var k in ant){if(!ant[k].matched&&!ant[k].error)cleanCount++;}
+  h+='  <div class="kpi" style="border-top:3px solid #3e7af9"><div class="icon">&#128269;</div><div class="val" style="color:#3e7af9">'+cleanCount+'/'+antCount+'</div><div class="lbl">Listas Limpias</div></div>';
+  h+='</div>';
 
-  // ═══ JUSTIFICACIÓN MONTO ═══
-  if (res.monto_justificacion) {
-    html += '<div class="res-just">';
-    html += '  <b>&#128202; Justificación del monto máximo:</b><br>';
-    html += '  ' + escH(res.monto_justificacion);
-    html += '</div>';
+  // ═══ BLOQUEANTES ═══
+  if(res.bloqueantes&&res.bloqueantes.length){
+    h+='<div class="block-alert ri ri-d2">';
+    h+='  <div class="title">&#9888; BLOQUEANTES ENCONTRADOS</div>';
+    for(var i=0;i<res.bloqueantes.length;i++) h+='<div class="block-item">'+res.bloqueantes[i]+'</div>';
+    h+='</div>';
   }
 
   // ═══ RSALES ═══
-  html += '<div class="res-section">';
-  html += '  <h3>&#128225; Historial Comercial — RSALES</h3>';
-  if (p.rsales) {
-    var rs = p.rsales;
-    var venC = (rs.pct_vencida||0)>30?'#dc2626':((rs.pct_vencida||0)>15?'#d97706':'#15803d');
-    html += '<div class="res-grid res-grid-4">';
-    html += '  <div class="res-card"><div class="label">Cartera Total</div><div class="value">$'+Number(rs.cartera_total||0).toLocaleString('es-CO')+'</div></div>';
-    html += '  <div class="res-card"><div class="label">Cartera Vencida</div><div class="value" style="color:'+venC+'">$'+Number(rs.cartera_vencida||0).toLocaleString('es-CO')+'<small> ('+Number(rs.pct_vencida||0).toFixed(1)+'%)</small></div></div>';
-    html += '  <div class="res-card"><div class="label">Compras Totales</div><div class="value">$'+Number(rs.compras_total||0).toLocaleString('es-CO')+'</div></div>';
-    html += '  <div class="res-card"><div class="label">Mora Máxima</div><div class="value">'+(rs.dias_mora_max||0)+' días</div></div>';
-    html += '</div>';
+  h+='<div class="sec ri ri-d2">';
+  h+='  <div class="sec-title">&#128225; Historial Comercial — RSALES <span class="badge">ventasremotas.com</span></div>';
+  if(p.rsales){
+    var rs=p.rsales;
+    var vc=(rs.pct_vencida||0)>30?'#dc2626':((rs.pct_vencida||0)>15?'#d97706':'#15803d');
+    h+='<div class="kpi-row">';
+    h+='  <div class="kpi" style="padding:14px"><div class="val" style="font-size:20px">$'+N(rs.cartera_total||0)+'</div><div class="lbl">Cartera Total</div></div>';
+    h+='  <div class="kpi" style="padding:14px;border-top:3px solid '+vc+'"><div class="val" style="font-size:20px;color:'+vc+'">$'+N(rs.cartera_vencida||0)+'<span style="font-size:12px;font-weight:400"> ('+P(rs.pct_vencida)+')</span></div><div class="lbl">Cartera Vencida</div></div>';
+    h+='  <div class="kpi" style="padding:14px"><div class="val" style="font-size:20px">$'+N(rs.compras_total||0)+'</div><div class="lbl">Compras Totales</div></div>';
+    h+='  <div class="kpi" style="padding:14px"><div class="val" style="font-size:20px">'+(rs.dias_mora_max||0)+' <span style="font-size:12px;font-weight:400">dias</span></div><div class="lbl">Mora Maxima</div></div>';
+    h+='</div>';
   } else {
-    html += '<div style="padding:20px;text-align:center;color:var(--text-faint)">';
-    html += '  &#9888; Cliente no encontrado en RSALES — sin historial comercial disponible';
-    html += '</div>';
+    h+='<div style="text-align:center;padding:24px;color:var(--text-faint)"><div style="font-size:28px;margin-bottom:8px">&#128269;</div>Cliente no encontrado en RSALES<br><span style="font-size:12px">Sin historial comercial disponible</span></div>';
   }
-  html += '</div>';
+  h+='</div>';
+
+  // ═══ JUSTIFICACION MONTO ═══
+  if(res.monto_justificacion){
+    h+='<div class="just-box ri ri-d3">';
+    h+='  <div class="title">&#128202; Justificacion del Monto Maximo Recomendado</div>';
+    h+='  <div style="font-size:13px;line-height:1.7">'+esc(res.monto_justificacion)+'</div>';
+    h+='  <div class="formula">';
+    h+='    <b>Formula:</b> Ventas anuales x 30% (capacidad) x multiplicador de riesgo<br>';
+    h+='    <b>Ejemplo:</b> $112,540,083 x 0.30 x 0.6 = <b style="color:#6941f4">$20,257,215</b>';
+    h+='  </div>';
+    h+='</div>';
+  }
 
   // ═══ ANTECEDENTES ═══
-  html += '<div class="res-section">';
-  html += '  <h3>&#128269; Antecedentes y Listas Restrictivas</h3>';
-  var antKeys = Object.keys(ant);
-  for (var i = 0; i < antKeys.length; i++) {
-    var k = antKeys[i];
-    var v = ant[k];
-    var iconClass = v.matched ? 'bad' : (v.error ? 'warn' : 'ok');
-    var iconSym = v.matched ? '&#10007;' : (v.error ? '&#9888;' : '&#10003;');
-    var label = v.matched ? 'ENCONTRADO' : (v.error ? 'ERROR' : 'LIMPIO');
-    var labColor = v.matched ? '#dc2626' : (v.error ? '#d97706' : '#15803d');
-    html += '<div class="res-ant">';
-    html += '  <div class="icon '+iconClass+'">'+iconSym+'</div>';
-    html += '  <div style="flex:1"><b>'+escH(k)+'</b> — <span style="color:'+labColor+';font-weight:600">'+label+'</span>';
-    if (v.summary) html += '<div style="color:var(--text-faint);font-size:11px;margin-top:2px">'+escH(v.summary)+'</div>';
-    html += '</div>';
-    html += '  <div style="font-size:11px;color:var(--text-faint)">'+(v.elapsed_s||0)+'s</div>';
-    html += '</div>';
+  h+='<div class="sec ri ri-d3">';
+  h+='  <div class="sec-title">&#128269; Antecedentes y Listas Restrictivas <span class="badge">'+Object.keys(ant).length+' fuentes</span></div>';
+  var ak=Object.keys(ant);
+  for(var i=0;i<ak.length;i++){
+    var k=ak[i],v=ant[k];
+    var cls=v.matched?'r':(v.error?'y':'g');
+    var sym=v.matched?'&#10007;':(v.error?'&#9888;':'&#10003;');
+    var lbl=v.matched?'ENCONTRADO':(v.error?'ERROR':'LIMPIO');
+    var bc=v.matched?'hit':(v.error?'err':'clean');
+    h+='<div class="ant-row">';
+    h+='  <div class="ant-icon '+cls+'">'+sym+'</div>';
+    h+='  <div class="ant-info"><div class="ant-name">'+esc(k)+'</div>';
+    if(v.summary)h+='<div class="ant-desc">'+esc(v.summary)+'</div>';
+    h+='</div>';
+    h+='  <div class="ant-badge '+bc+'">'+lbl+'</div>';
+    h+='</div>';
   }
-  html += '</div>';
-
-  // ═══ BLOQUEANTES ═══
-  if (res.bloqueantes && res.bloqueantes.length) {
-    html += '<div class="res-section" style="border-color:rgba(220,38,38,.3);background:rgba(220,38,38,.03)">';
-    html += '  <h3 style="color:#dc2626">&#9888; Bloqueantes Encontrados</h3>';
-    for (var i = 0; i < res.bloqueantes.length; i++) {
-      html += '<div style="padding:10px 14px;background:rgba(220,38,38,.05);border-radius:8px;margin-bottom:6px;font-size:13px;color:#991b1b">'+res.bloqueantes[i]+'</div>';
-    }
-    html += '</div>';
-  }
+  h+='</div>';
 
   // ═══ DOCUMENTOS ═══
-  var docsCount = 0;
-  var docsTotal = Object.keys(docs).length;
-  for (var dk in docs) { if (docs[dk]) docsCount++; }
-  var docLabels = {cedula_frontal:'Cédula Frontal',cedula_posterior:'Cédula Posterior',rut:'RUT',camara_comercio:'Cámara de Comercio',estados_financieros:'Estados Financieros',declaracion_renta:'Decl. Renta'};
-  html += '<div class="res-section">';
-  html += '  <h3>&#128196; Documentación ('+docsCount+'/'+docsTotal+')</h3>';
-  html += '  <div class="res-grid res-grid-3">';
-  for (var dk in docLabels) {
-    var ok = docs[dk];
-    html += '<div class="res-card" style="border-left:3px solid '+(ok?'#15803d':'var(--line)')+'">';
-    html += '  <div style="font-size:12px">'+(ok?'&#10003;':'&#10007;')+' '+docLabels[dk]+'</div>';
-    html += '</div>';
+  var dc=0;for(var dk in docs){if(docs[dk])dc++;}
+  var dl={cedula_frontal:'&#128196; Cedula Frontal',cedula_posterior:'&#128196; Cedula Posterior',rut:'&#128196; RUT',camara_comercio:'&#127970; Camara de Comercio',estados_financieros:'&#128200; Estados Financieros',declaracion_renta:'&#128196; Declaracion Renta'};
+  h+='<div class="sec ri ri-d3">';
+  h+='  <div class="sec-title">&#128196; Documentacion Adjunta <span class="badge">'+dc+'/'+Object.keys(dl).length+'</span></div>';
+  h+='  <div class="doc-grid">';
+  for(var dk in dl){
+    var ok2=docs[dk];
+    h+='<div class="doc-item '+(ok2?'yes':'no')+'"><div class="doc-icon">'+(ok2?'&#10003;':'&#10007;')+'</div>'+dl[dk]+'</div>';
   }
-  html += '  </div>';
-  html += '</div>';
+  h+='  </div>';
+  h+='</div>';
 
   // ═══ FACTORES ═══
-  html += '<div class="res-grid res-grid-2">';
-  html += '<div class="res-section">';
-  html += '  <h3 style="color:#15803d">&#10003; Factores Positivos</h3>';
-  if (p.factores_positivos && p.factores_positivos.length) {
-    for (var i = 0; i < p.factores_positivos.length; i++) {
-      html += '<div class="res-factor"><div class="dot" style="background:#15803d"></div><div>'+escH(p.factores_positivos[i])+'</div></div>';
-    }
-  } else {
-    html += '<div style="color:var(--text-faint);font-size:12px">Ninguno identificado</div>';
-  }
-  html += '</div>';
-  html += '<div class="res-section">';
-  html += '  <h3 style="color:#dc2626">&#10007; Factores Negativos</h3>';
-  if (p.factores_negativos && p.factores_negativos.length) {
-    for (var i = 0; i < p.factores_negativos.length; i++) {
-      html += '<div class="res-factor"><div class="dot" style="background:#dc2626"></div><div>'+escH(p.factores_negativos[i])+'</div></div>';
-    }
-  } else {
-    html += '<div style="color:var(--text-faint);font-size:12px">Ninguno identificado</div>';
-  }
-  html += '</div>';
-  html += '</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" class="ri ri-d4">';
+  h+='<div class="sec" style="border-top:3px solid #15803d">';
+  h+='  <div class="sec-title" style="color:#15803d;border-color:rgba(34,197,94,.2)">&#10003; Factores Positivos</div>';
+  if(p.factores_positivos&&p.factores_positivos.length){
+    for(var i=0;i<p.factores_positivos.length;i++) h+='<div class="factor-row"><div class="factor-dot" style="background:#15803d"></div><div>'+esc(p.factores_positivos[i])+'</div></div>';
+  } else h+='<div style="color:var(--text-faint);font-size:12px;padding:8px 0">Ninguno identificado</div>';
+  h+='</div>';
+  h+='<div class="sec" style="border-top:3px solid #dc2626">';
+  h+='  <div class="sec-title" style="color:#dc2626;border-color:rgba(220,38,38,.2)">&#10007; Factores Negativos</div>';
+  if(p.factores_negativos&&p.factores_negativos.length){
+    for(var i=0;i<p.factores_negativos.length;i++) h+='<div class="factor-row"><div class="factor-dot" style="background:#dc2626"></div><div>'+esc(p.factores_negativos[i])+'</div></div>';
+  } else h+='<div style="color:var(--text-faint);font-size:12px;padding:8px 0">Ninguno identificado</div>';
+  h+='</div>';
+  h+='</div>';
 
   // ═══ ACCIONES ═══
-  html += '<div style="display:flex;gap:10px;margin-top:20px;justify-content:center">';
-  html += '  <a href="/credito" class="btn btn-primary" style="text-decoration:none">&#8592; Nueva Evaluación</a>';
-  html += '  <button class="btn btn-secondary" onclick="window.print()">&#128424; Imprimir</button>';
-  html += '</div>';
+  h+='<div class="actions">';
+  h+='  <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
+  h+='  <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
+  h+='</div>';
 
-  document.getElementById('app').innerHTML = html;
+  $('app').innerHTML=h;
 }
 
-function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+function N(v){return Number(v||0).toLocaleString('es-CO');}
+function P(v){return Number(v||0).toFixed(1)+'%';}
 
 render();
 </script>
