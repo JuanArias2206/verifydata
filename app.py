@@ -1823,7 +1823,7 @@ function ejecutarCheckIntegral() {
         return;
       }
       document.getElementById('btn-descargar').style.display = 'inline-flex';
-      status.innerHTML = '&#10003; Check completo';
+      status.innerHTML = '&#10003; Check completo — <a href="/credit/results/' + d.result_token + '" style="color:var(--violet);font-weight:600">Ver resultado completo &#8594;</a>';
     } else {
       status.innerHTML = '<span style="color:#dc2626">&#10007; Error: ' + escH(d.error || 'Desconocido') + '</span>';
     }
@@ -2489,6 +2489,20 @@ def api_credit_excel_clientes():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  Almacenamiento temporal de resultados por token
+# ═══════════════════════════════════════════════════════════════════
+_CREDIT_RESULTS: dict[str, dict] = {}
+import secrets as _secrets
+
+def _store_credit_result(result: dict) -> str:
+    token = _secrets.token_urlsafe(16)
+    _CREDIT_RESULTS[token] = result
+    # Limpiar: max 100 resultados
+    while len(_CREDIT_RESULTS) > 100:
+        _CREDIT_RESULTS.pop(next(iter(_CREDIT_RESULTS)))
+    return token
+
 # ==============================================================
 #  CHECK INTEGRAL — Crédito + Antecedentes + OFAC + Judicial
 # ==============================================================
@@ -2695,9 +2709,258 @@ def api_credit_full_check():
         "nivel_riesgo": profile.nivel_riesgo,
         "recomendacion": profile.recomendacion,
         "monto_maximo": profile.monto_maximo_recomendado,
+        "monto_justificacion": _justificar_monto(profile, excel_data),
     }
 
-    return jsonify({"ok": True, "result": results})
+    result_token = _store_credit_result(results)
+
+    return jsonify({"ok": True, "result": results, "result_token": result_token})
+
+
+def _justificar_monto(profile, excel_data):
+    """Genera justificación del monto máximo recomendado."""
+    ventas = 0
+    fuente = ""
+    if profile.rsales_disponible and profile.rsales_compras_total > 0:
+        ventas = profile.rsales_compras_total
+        fuente = "RSales (compras históricas)"
+    elif profile.excel_disponible:
+        promedio = float(excel_data.get("promedio_compras") or 0)
+        num = int(float(excel_data.get("numero_compras") or 0))
+        ventas = promedio * num
+        fuente = f"Excel (promedio ${promedio:,.0f} × {num} compras)"
+
+    if ventas <= 0:
+        return "Sin datos de ventas suficientes para calcular monto."
+
+    ratio = 0.30
+    base = ventas * ratio
+    multiplicador = {"BAJO": 1.0, "MEDIO": 0.6, "ALTO": 0.3, "CRITICO": 0}.get(profile.nivel_riesgo, 0)
+    monto = round(base * multiplicador, -3)
+
+    return (
+        f"Ventas anuales estimadas: ${ventas:,.0f} (fuente: {fuente}). "
+        f"Se aplica el 30% como capacidad de pago (${base:,.0f}). "
+        f"Multiplicador por riesgo {profile.nivel_riesgo}: ×{multiplicador}. "
+        f"Resultado: ${monto:,.0f}."
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  PÁGINA DE RESULTADOS — /credit/results/<token>
+# ═══════════════════════════════════════════════════════════════════
+@app.route("/credit/results/<token>")
+def credit_results_page(token):
+    """Página dedicada de resultados del check integral crediticio."""
+    import json
+    result = _CREDIT_RESULTS.get(token)
+    if not result:
+        return render_template_string(RESULTS_404_TEMPLATE), 404
+    return render_template_string(
+        RESULTS_TEMPLATE,
+        result_json=json.dumps(result, ensure_ascii=False),
+        token=token,
+    )
+
+
+RESULTS_404_TEMPLATE = ui_theme.head_open("VerifyData — Resultado no encontrado") + \
+    ui_theme.shell_open("credito", "Resultado no encontrado", "") + """
+<div class="main-content" style="text-align:center;padding:60px 20px">
+  <div style="font-size:48px;margin-bottom:16px">&#128269;</div>
+  <h2 style="margin-bottom:8px">Resultado no encontrado</h2>
+  <p style="color:var(--text-faint)">El enlace ha expirado o el resultado no existe.</p>
+  <a href="/credito" class="btn btn-primary" style="margin-top:20px;display:inline-block;text-decoration:none">
+    &#8592; Volver al evaluador
+  </a>
+</div>
+""" + ui_theme.SHELL_CLOSE
+
+
+RESULTS_TEMPLATE = ui_theme.head_open("VerifyData — Resultado Crediticio") + \
+    ui_theme.shell_open("credito", "Resultado delanálisis", "") + """
+<style>{% raw %}
+  .res-hero{display:flex;align-items:center;justify-content:space-between;padding:24px;border-radius:14px;margin-bottom:20px}
+  .res-score{font-size:72px;font-weight:800;line-height:1}
+  .res-score-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.7;margin-top:4px}
+  .res-tag{display:inline-block;padding:8px 20px;border-radius:20px;font-size:14px;font-weight:700;letter-spacing:.03em}
+  .res-section{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px}
+  .res-section h3{font-size:14px;font-weight:700;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .res-grid{display:grid;gap:10px}
+  .res-grid-4{grid-template-columns:repeat(4,1fr)}
+  .res-grid-3{grid-template-columns:repeat(3,1fr)}
+  .res-grid-2{grid-template-columns:1fr 1fr}
+  .res-card{padding:12px;background:rgba(0,0,0,.02);border-radius:8px}
+  .res-card .label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);margin-bottom:4px}
+  .res-card .value{font-size:18px;font-weight:700}
+  .res-ant{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:8px;margin-bottom:6px;font-size:13px;border:1px solid var(--line)}
+  .res-ant .icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+  .res-ant .icon.ok{background:rgba(34,197,94,.1);color:#15803d}
+  .res-ant .icon.bad{background:rgba(220,38,38,.1);color:#dc2626}
+  .res-ant .icon.warn{background:rgba(217,119,6,.1);color:#d97706}
+  .res-factor{display:flex;align-items:start;gap:8px;font-size:12px;margin-bottom:6px}
+  .res-factor .dot{width:6px;height:6px;border-radius:50%;margin-top:5px;flex-shrink:0}
+  .res-just{padding:14px;background:rgba(105,65,244,.04);border:1px solid rgba(105,65,244,.15);border-radius:10px;font-size:13px;line-height:1.6;margin-top:12px}
+  .res-just b{color:#6941f4}
+  @media(max-width:800px){.res-grid-4{grid-template-columns:1fr 1fr}.res-grid-3{grid-template-columns:1fr}.res-grid-2{grid-template-columns:1fr}}
+{% endraw %}</style>
+
+<div class="main-content" id="app"></div>
+
+<script>
+var DATA = {{ result_json|safe }};
+
+function render() {
+  var r = DATA;
+  var p = r.perfil_crediticio;
+  var ant = r.antecedentes || {};
+  var res = r.resumen_ejecutivo;
+  var docs = p.docs || {};
+
+  var colors = {'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
+  var color = colors[p.nivel_riesgo] || '#333';
+  var tagBg = res.aprobado ? '#15803d' : '#dc2626';
+  var tagTxt = res.aprobado ? 'APROBADO' : 'RECHAZADO';
+
+  var html = '';
+
+  // ═══ HERO ═══
+  html += '<div class="res-hero" style="background:linear-gradient(135deg,'+color+'15,'+color+'08);border:2px solid '+color+'">';
+  html += '  <div>';
+  html += '    <div style="font-size:11px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Análisis Integral de Riesgo Crediticio</div>';
+  html += '    <div style="font-size:24px;font-weight:800">'+escH(r.nombre)+'</div>';
+  html += '    <div style="font-size:13px;color:var(--text-faint)">CC/NIT: '+escH(r.cedula_nit)+' · '+new Date().toLocaleDateString('es-CO')+'</div>';
+  html += '  </div>';
+  html += '  <div style="text-align:center">';
+  html += '    <div class="res-score" style="color:'+color+'">'+p.score+'</div>';
+  html += '    <div class="res-score-label">Score / 1000</div>';
+  html += '  </div>';
+  html += '  <div style="text-align:center">';
+  html += '    <div class="res-tag" style="background:'+tagBg+';color:#fff">'+tagTxt+'</div>';
+  html += '    <div style="font-size:12px;margin-top:6px;color:var(--text-faint)">'+escH(p.nivel_riesgo)+'</div>';
+  html += '  </div>';
+  html += '</div>';
+
+  // ═══ RESUMEN RÁPIDO ═══
+  html += '<div class="res-grid res-grid-4" style="margin-bottom:16px">';
+  html += '  <div class="res-card"><div class="label">Score crediticio</div><div class="value" style="color:'+color+'">'+p.score+'</div></div>';
+  html += '  <div class="res-card"><div class="label">Nivel de riesgo</div><div class="value" style="color:'+color+'">'+escH(p.nivel_riesgo)+'</div></div>';
+  html += '  <div class="res-card"><div class="label">Recomendación</div><div class="value" style="font-size:13px">'+escH(p.recomendacion)+'</div></div>';
+  html += '  <div class="res-card"><div class="label">Monto máximo</div><div class="value" style="color:#6941f4">$'+Number(res.monto_maximo||0).toLocaleString('es-CO')+'</div></div>';
+  html += '</div>';
+
+  // ═══ JUSTIFICACIÓN MONTO ═══
+  if (res.monto_justificacion) {
+    html += '<div class="res-just">';
+    html += '  <b>&#128202; Justificación del monto máximo:</b><br>';
+    html += '  ' + escH(res.monto_justificacion);
+    html += '</div>';
+  }
+
+  // ═══ RSALES ═══
+  html += '<div class="res-section">';
+  html += '  <h3>&#128225; Historial Comercial — RSALES</h3>';
+  if (p.rsales) {
+    var rs = p.rsales;
+    var venC = (rs.pct_vencida||0)>30?'#dc2626':((rs.pct_vencida||0)>15?'#d97706':'#15803d');
+    html += '<div class="res-grid res-grid-4">';
+    html += '  <div class="res-card"><div class="label">Cartera Total</div><div class="value">$'+Number(rs.cartera_total||0).toLocaleString('es-CO')+'</div></div>';
+    html += '  <div class="res-card"><div class="label">Cartera Vencida</div><div class="value" style="color:'+venC+'">$'+Number(rs.cartera_vencida||0).toLocaleString('es-CO')+'<small> ('+Number(rs.pct_vencida||0).toFixed(1)+'%)</small></div></div>';
+    html += '  <div class="res-card"><div class="label">Compras Totales</div><div class="value">$'+Number(rs.compras_total||0).toLocaleString('es-CO')+'</div></div>';
+    html += '  <div class="res-card"><div class="label">Mora Máxima</div><div class="value">'+(rs.dias_mora_max||0)+' días</div></div>';
+    html += '</div>';
+  } else {
+    html += '<div style="padding:20px;text-align:center;color:var(--text-faint)">';
+    html += '  &#9888; Cliente no encontrado en RSALES — sin historial comercial disponible';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // ═══ ANTECEDENTES ═══
+  html += '<div class="res-section">';
+  html += '  <h3>&#128269; Antecedentes y Listas Restrictivas</h3>';
+  var antKeys = Object.keys(ant);
+  for (var i = 0; i < antKeys.length; i++) {
+    var k = antKeys[i];
+    var v = ant[k];
+    var iconClass = v.matched ? 'bad' : (v.error ? 'warn' : 'ok');
+    var iconSym = v.matched ? '&#10007;' : (v.error ? '&#9888;' : '&#10003;');
+    var label = v.matched ? 'ENCONTRADO' : (v.error ? 'ERROR' : 'LIMPIO');
+    var labColor = v.matched ? '#dc2626' : (v.error ? '#d97706' : '#15803d');
+    html += '<div class="res-ant">';
+    html += '  <div class="icon '+iconClass+'">'+iconSym+'</div>';
+    html += '  <div style="flex:1"><b>'+escH(k)+'</b> — <span style="color:'+labColor+';font-weight:600">'+label+'</span>';
+    if (v.summary) html += '<div style="color:var(--text-faint);font-size:11px;margin-top:2px">'+escH(v.summary)+'</div>';
+    html += '</div>';
+    html += '  <div style="font-size:11px;color:var(--text-faint)">'+(v.elapsed_s||0)+'s</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // ═══ BLOQUEANTES ═══
+  if (res.bloqueantes && res.bloqueantes.length) {
+    html += '<div class="res-section" style="border-color:rgba(220,38,38,.3);background:rgba(220,38,38,.03)">';
+    html += '  <h3 style="color:#dc2626">&#9888; Bloqueantes Encontrados</h3>';
+    for (var i = 0; i < res.bloqueantes.length; i++) {
+      html += '<div style="padding:10px 14px;background:rgba(220,38,38,.05);border-radius:8px;margin-bottom:6px;font-size:13px;color:#991b1b">'+res.bloqueantes[i]+'</div>';
+    }
+    html += '</div>';
+  }
+
+  // ═══ DOCUMENTOS ═══
+  var docsCount = 0;
+  var docsTotal = Object.keys(docs).length;
+  for (var dk in docs) { if (docs[dk]) docsCount++; }
+  var docLabels = {cedula_frontal:'Cédula Frontal',cedula_posterior:'Cédula Posterior',rut:'RUT',camara_comercio:'Cámara de Comercio',estados_financieros:'Estados Financieros',declaracion_renta:'Decl. Renta'};
+  html += '<div class="res-section">';
+  html += '  <h3>&#128196; Documentación ('+docsCount+'/'+docsTotal+')</h3>';
+  html += '  <div class="res-grid res-grid-3">';
+  for (var dk in docLabels) {
+    var ok = docs[dk];
+    html += '<div class="res-card" style="border-left:3px solid '+(ok?'#15803d':'var(--line)')+'">';
+    html += '  <div style="font-size:12px">'+(ok?'&#10003;':'&#10007;')+' '+docLabels[dk]+'</div>';
+    html += '</div>';
+  }
+  html += '  </div>';
+  html += '</div>';
+
+  // ═══ FACTORES ═══
+  html += '<div class="res-grid res-grid-2">';
+  html += '<div class="res-section">';
+  html += '  <h3 style="color:#15803d">&#10003; Factores Positivos</h3>';
+  if (p.factores_positivos && p.factores_positivos.length) {
+    for (var i = 0; i < p.factores_positivos.length; i++) {
+      html += '<div class="res-factor"><div class="dot" style="background:#15803d"></div><div>'+escH(p.factores_positivos[i])+'</div></div>';
+    }
+  } else {
+    html += '<div style="color:var(--text-faint);font-size:12px">Ninguno identificado</div>';
+  }
+  html += '</div>';
+  html += '<div class="res-section">';
+  html += '  <h3 style="color:#dc2626">&#10007; Factores Negativos</h3>';
+  if (p.factores_negativos && p.factores_negativos.length) {
+    for (var i = 0; i < p.factores_negativos.length; i++) {
+      html += '<div class="res-factor"><div class="dot" style="background:#dc2626"></div><div>'+escH(p.factores_negativos[i])+'</div></div>';
+    }
+  } else {
+    html += '<div style="color:var(--text-faint);font-size:12px">Ninguno identificado</div>';
+  }
+  html += '</div>';
+  html += '</div>';
+
+  // ═══ ACCIONES ═══
+  html += '<div style="display:flex;gap:10px;margin-top:20px;justify-content:center">';
+  html += '  <a href="/credito" class="btn btn-primary" style="text-decoration:none">&#8592; Nueva Evaluación</a>';
+  html += '  <button class="btn btn-secondary" onclick="window.print()">&#128424; Imprimir</button>';
+  html += '</div>';
+
+  document.getElementById('app').innerHTML = html;
+}
+
+function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+
+render();
+</script>
+""" + ui_theme.SHELL_CLOSE
 
 
 # ==============================================================
