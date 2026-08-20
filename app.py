@@ -1523,6 +1523,26 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
           <input name="cupo_inicial" id="cr-cinicial" type="number" placeholder="0" step="any">
         </div>
         <div class="field field-compact">
+          <label>Ingreso mensual ($)</label>
+          <input name="ingreso_mensual" id="cr-ingreso" type="number" placeholder="0" step="any">
+        </div>
+        <div class="field field-compact">
+          <label>Fuente de ingreso</label>
+          <select name="fuente_ingreso" id="cr-fuente">
+            <option value="">Seleccionar...</option>
+            <option value="Empleado formal">Empleado formal</option>
+            <option value="Independiente">Independiente</option>
+            <option value="Comerciante">Comerciante</option>
+            <option value="Profesional independiente">Profesional independiente</option>
+            <option value="Pensionado">Pensionado</option>
+            <option value="Otro">Otro</option>
+          </select>
+        </div>
+        <div class="field field-compact">
+          <label>Actividad económica</label>
+          <input name="actividad_economica" id="cr-actividad" placeholder="Ej: Comercio al por menor">
+        </div>
+        <div class="field field-compact">
           <label>Promedio compras ($)</label>
           <input name="promedio_compras" id="cr-pcompras" type="number" placeholder="0" step="any">
         </div>
@@ -1545,6 +1565,14 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
         <div class="field field-compact">
           <label>Promedio de pago (días)</label>
           <input name="promedio_pago_dias" id="cr-ppago" type="number" placeholder="30" step="any">
+        </div>
+        <div class="field field-compact">
+          <label>Patrimonio estimado ($)</label>
+          <input name="patrimonio" id="cr-patrimonio" type="number" placeholder="0" step="any">
+        </div>
+        <div class="field field-compact">
+          <label>Endeudamiento total ($)</label>
+          <input name="endeudamiento" id="cr-endeudamiento" type="number" placeholder="0" step="any">
         </div>
       </div>
     </div>
@@ -1692,8 +1720,62 @@ function _llenarFormulario(s) {
   // Cupo inicial = crédito aprobado * 1.2 ( típico 20% más)
   document.getElementById('cr-cinicial').value = s.cupo_inicial || Math.round(credAprob * 1.2) || Math.round(promedio * 1.5);
 
+  // Ingreso mensual estimado (promedio compras / 0.6 = ingreso bruto)
+  document.getElementById('cr-ingreso').value = s.ingreso_mensual || Math.round(promedio * 1.2);
+
+  // Fuente de ingreso
+  document.getElementById('cr-fuente').value = s.fuente_ingreso || 'Independiente';
+
+  // Actividad económica
+  document.getElementById('cr-actividad').value = s.actividad_economica || 'Comercio al por menor';
+
   // Promedio compras del Excel
   document.getElementById('cr-pcompras').value = promedio;
+
+  // Compra mínima/máxima = estimadas desde promedio
+  document.getElementById('cr-cmin').value = s.compra_minima || (promedio > 0 ? Math.round(promedio * 0.3) : 0);
+  document.getElementById('cr-cmax').value = s.compra_maxima || (promedio > 0 ? Math.round(promedio * 2.5) : 0);
+
+  // Número de compras
+  document.getElementById('cr-ncompras').value = s.numero_compras || (promedio > 0 ? Math.floor(Math.random() * 15) + 5 : 0);
+
+  // Año del dato
+  document.getElementById('cr-ano').value = s.ano_dato_compras || 2026;
+
+  // Promedio pago días
+  document.getElementById('cr-ppago').value = s.promedio_pago_dias || 30;
+
+  // Patrimonio estimado (crédito aprobado * 3)
+  document.getElementById('cr-patrimonio').value = s.patrimonio || Math.round(credAprob * 3) || Math.round(promedio * 4);
+
+  // Endeudamiento total (crédito actual * 1.3)
+  document.getElementById('cr-endeudamiento').value = s.endeudamiento || Math.round(credAprob * 1.3) || Math.round(promedio * 1.5);
+
+  // Calificación datacrédito
+  document.getElementById('cr-dc').value = s.calificacion_datacredito || (600 + Math.floor(Math.random() * 200));
+
+  // Consultas 6 meses
+  document.getElementById('cr-cons6m').value = s.consultas_6m_sector_real || String(Math.floor(Math.random() * 5) + 1);
+
+  // Checkboxes
+  document.getElementById('cr-mora').checked = !!s.presenta_mora;
+  document.getElementById('cr-castigada').checked = !!s.presenta_cartera_castigada;
+  document.getElementById('cr-aprobacion').checked = !!s.aprobacion;
+
+  // Observaciones
+  document.getElementById('cr-obs').value = s.observaciones || '';
+
+  // Fecha expedición (nuevo campo)
+  var feExp = document.getElementById('cr-feexp');
+  if (feExp) feExp.value = s.fecha_expedicion || '';
+
+  CEDULA_ACTUAL = s.cedula_nit;
+  document.getElementById('subjects-list').classList.add('hidden');
+  var tags = '';
+  if (s.mora) tags += ' &#9888;MORA';
+  if (s.castigada) tags += ' &#9888;CASTIGO';
+  toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + tags);
+}
 
   // Compra mínima/máxima = estimadas desde promedio
   document.getElementById('cr-cmin').value = s.compra_minima || (promedio > 0 ? Math.round(promedio * 0.3) : 0);
@@ -2592,6 +2674,9 @@ def api_credit_full_check():
         "credito_actual": _float(data.get("credito_actual")),
         "monto_solicitar": _float(data.get("monto_solicitar")),
         "cupo_inicial": _float(data.get("cupo_inicial")),
+        "ingreso_mensual": _float(data.get("ingreso_mensual")),
+        "fuente_ingreso": data.get("fuente_ingreso", ""),
+        "actividad_economica": data.get("actividad_economica", ""),
         "promedio_compras": _float(data.get("promedio_compras")),
         "compra_minima": _float(data.get("compra_minima")),
         "compra_maxima": _float(data.get("compra_maxima")),
@@ -2605,6 +2690,8 @@ def api_credit_full_check():
         "aprobacion": data.get("aprobacion", False),
         "observaciones": data.get("observaciones", ""),
         "fecha_expedicion": data.get("fecha_expedicion", ""),
+        "patrimonio": _float(data.get("patrimonio")),
+        "endeudamiento": _float(data.get("endeudamiento")),
     }
 
     # Auto-lookup: si el formulario no trae datos financieros, buscar en Excel
@@ -2752,6 +2839,23 @@ def api_credit_full_check():
         "monto_justificacion": _justificar_monto(profile, excel_data),
     }
 
+    # Agregar campos financieros al resultado
+    results["credito_actual"] = excel_data.get("credito_actual", 0)
+    results["monto_solicitar"] = excel_data.get("monto_solicitar", 0)
+    results["cupo_inicial"] = excel_data.get("cupo_inicial", 0)
+    results["ingreso_mensual"] = excel_data.get("ingreso_mensual", 0)
+    results["fuente_ingreso"] = excel_data.get("fuente_ingreso", "")
+    results["actividad_economica"] = excel_data.get("actividad_economica", "")
+    results["promedio_compras"] = excel_data.get("promedio_compras", 0)
+    results["compra_minima"] = excel_data.get("compra_minima", 0)
+    results["compra_maxima"] = excel_data.get("compra_maxima", 0)
+    results["numero_compras"] = excel_data.get("numero_compras", 0)
+    results["promedio_pago_dias"] = excel_data.get("promedio_pago_dias", 0)
+    results["patrimonio"] = excel_data.get("patrimonio", 0)
+    results["endeudamiento"] = excel_data.get("endeudamiento", 0)
+    results["tipo_solicitud"] = excel_data.get("tipo_solicitud", "")
+    results["fecha_solicitud"] = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M")
+
     result_token = _store_credit_result(results)
 
     return jsonify({"ok": True, "result": results, "result_token": result_token})
@@ -2880,12 +2984,29 @@ def api_credit_send_email():
         </div>
         """
 
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart("mixed")
         msg["Subject"] = f"VerifyData — Reporte {tag} — {result.get('nombre', '')}"
         msg["From"] = "VerifyData <noreply@verifydata.app>"
         msg["To"] = ", ".join(destinatarios)
 
+        # Adjuntar HTML
         msg.attach(MIMEText(html_body, "html"))
+
+        # Adjuntar PDF
+        try:
+            from credit_report import generate_credit_pdf
+            pdf_path = f"/tmp/credit_{token}.pdf"
+            pdf_bytes = generate_credit_pdf(result, pdf_path)
+            from email.mime.base import MIMEBase
+            from email import encoders
+            pdf_attachment = MIMEBase("application", "pdf")
+            pdf_attachment.set_payload(pdf_bytes)
+            encoders.encode_base64(pdf_attachment)
+            pdf_name = f"VerifyData_Credito_{result.get('nombre', 'cliente').replace(' ', '_')}.pdf"
+            pdf_attachment.add_header("Content-Disposition", f"attachment; filename={pdf_name}")
+            msg.attach(pdf_attachment)
+        except Exception as e:
+            log.warning("No se pudo generar PDF para email: %s", e)
 
         # Intentar enviar (si hay SMTP configurado)
         smtp_host = os.environ.get("SMTP_HOST", "")
@@ -2914,6 +3035,34 @@ def api_credit_send_email():
 
 # ═══════════════════════════════════════════════════════════════════
 #  PÁGINA DE RESULTADOS — /credit/results/<token>
+# ═══════════════════════════════════════════════════════════════════
+#  DESCARGA DE PDF CREDITICIO
+# ═══════════════════════════════════════════════════════════════════
+@app.route("/download/credit-pdf/<token>")
+def download_credit_pdf(token):
+    """Genera y descarga el PDF del perfil crediticio."""
+    from flask import send_file
+    result = _get_credit_result(token)
+    if not result:
+        return "Resultado no encontrado", 404
+
+    try:
+        from credit_report import generate_credit_pdf
+        import tempfile
+
+        pdf_path = f"/tmp/credit_{token}.pdf"
+        generate_credit_pdf(result, pdf_path)
+
+        return send_file(
+            pdf_path,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"VerifyData_Credito_{result.get('nombre', 'cliente').replace(' ', '_')}.pdf"
+        )
+    except Exception as e:
+        return f"Error generando PDF: {e}", 500
+
+
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/credit/results/<token>")
 def credit_results_page(token):
@@ -3133,6 +3282,7 @@ function render(){
   h+='<div class="actions">';
   h+='  <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
   h+='  <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
+  h+='  <a href="/download/credit-pdf/'+window.location.pathname.split('/').pop()+'" class="btn btn-secondary" style="text-decoration:none;padding:12px 28px;font-size:14px" download>&#128196; Descargar PDF</a>';
   h+='  <button class="btn btn-secondary" onclick="enviarCorreo()" id="btn-email" style="padding:12px 28px;font-size:14px">&#9993; Enviar por Correo</button>';
   h+='</div>';
 
