@@ -2765,6 +2765,11 @@ def _justificar_monto(profile, excel_data):
 # ═══════════════════════════════════════════════════════════════════
 #  ENVIAR RESULTADOS POR CORREO
 # ═══════════════════════════════════════════════════════════════════
+DEFAULT_RECIPIENTS = [
+    "darango.ccafs@gmail.com",
+    "juanmanuelarias.jmag@gmail.com",
+]
+
 @app.route("/api/credit/send-email", methods=["POST"])
 def api_credit_send_email():
     """Envía el reporte de crédito por correo electrónico."""
@@ -2773,7 +2778,9 @@ def api_credit_send_email():
 
     data = request.get_json(silent=True) or {}
     token = data.get("token", "")
-    destinatario = data.get("email", "darango.ccafs@gmail.com")
+    destinatarios = data.get("emails", DEFAULT_RECIPIENTS)
+    if isinstance(destinatarios, str):
+        destinatarios = [destinatarios]
 
     result = _CREDIT_RESULTS.get(token)
     if not result:
@@ -2852,7 +2859,7 @@ def api_credit_send_email():
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"VerifyData — Reporte {tag} — {result.get('nombre', '')}"
         msg["From"] = "VerifyData <noreply@verifydata.app>"
-        msg["To"] = destinatario
+        msg["To"] = ", ".join(destinatarios)
 
         msg.attach(MIMEText(html_body, "html"))
 
@@ -2866,15 +2873,15 @@ def api_credit_send_email():
                 server.starttls()
                 if smtp_user:
                     server.login(smtp_user, smtp_pass)
-                server.sendmail("noreply@verifydata.app", destinatario, msg.as_string())
-            return jsonify({"ok": True, "message": f"Correo enviado a {destinatario}"})
+                server.sendmail("noreply@verifydata.app", destinatarios, msg.as_string())
+            return jsonify({"ok": True, "message": f"Correo enviado a {len(destinatarios)} destinatarios"})
         else:
             # Sin SMTP: devolver el HTML para preview
             return jsonify({
                 "ok": True,
                 "message": "SMTP no configurado — preview del correo",
                 "preview_html": html_body,
-                "to": destinatario,
+                "to": destinatarios,
             })
 
     except Exception as e:
@@ -3121,7 +3128,7 @@ function enviarCorreo(){
   fetch('/api/credit/send-email',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({token:token,email:'darango.ccafs@gmail.com'})
+    body:JSON.stringify({token:token,emails:['darango.ccafs@gmail.com','juanmanuelarias.jmag@gmail.com']})
   }).then(function(r){return r.json();}).then(function(d){
     btn.disabled=false;
     if(d.ok){
