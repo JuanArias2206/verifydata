@@ -27,6 +27,11 @@ os.environ["PORT"] = "8080"
 _tmp_db = Path("/tmp/verifydata.db")
 os.environ.setdefault("VERIFYDATA_DB_PATH", str(_tmp_db))
 
+# ── Inicializar DB ANTES de importar la app ────────────────────────
+from db import init_db, set_db_path
+set_db_path(_tmp_db)
+init_db(_tmp_db)
+
 # ── Asegurar directorios mínimos ───────────────────────────────────
 _tmp_data = Path("/tmp/data")
 for _d in (_tmp_data, _tmp_data / "certs", _tmp_data / "screenshots"):

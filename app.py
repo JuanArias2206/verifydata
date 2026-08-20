@@ -2513,11 +2513,35 @@ import secrets as _secrets
 
 def _store_credit_result(result: dict) -> str:
     token = _secrets.token_urlsafe(16)
+    # Guardar en memoria (para冷 start local)
     _CREDIT_RESULTS[token] = result
-    # Limpiar: max 100 resultados
+    # Guardar en SQLite (para Vercel cold starts)
+    try:
+        from db import credit_result_save
+        credit_result_save(token, result)
+    except Exception:
+        pass
+    # Limpiar memoria: max 100 resultados
     while len(_CREDIT_RESULTS) > 100:
         _CREDIT_RESULTS.pop(next(iter(_CREDIT_RESULTS)))
     return token
+
+def _get_credit_result(token: str) -> dict | None:
+    """Busca resultado en memoria primero, luego en SQLite."""
+    # 1. Intentar en memoria
+    result = _CREDIT_RESULTS.get(token)
+    if result:
+        return result
+    # 2. Intentar en SQLite (Vercel cold start)
+    try:
+        from db import credit_result_get
+        result = credit_result_get(token)
+        if result:
+            _CREDIT_RESULTS[token] = result  # Cache en memoria
+            return result
+    except Exception:
+        pass
+    return None
 
 # ==============================================================
 #  CHECK INTEGRAL — Crédito + Antecedentes + OFAC + Judicial
@@ -2782,7 +2806,7 @@ def api_credit_send_email():
     if isinstance(destinatarios, str):
         destinatarios = [destinatarios]
 
-    result = _CREDIT_RESULTS.get(token)
+    result = _get_credit_result(token)
     if not result:
         return jsonify({"ok": False, "error": "Resultado no encontrado"}), 404
 
@@ -2895,7 +2919,7 @@ def api_credit_send_email():
 def credit_results_page(token):
     """Página dedicada de resultados del check integral crediticio."""
     import json
-    result = _CREDIT_RESULTS.get(token)
+    result = _get_credit_result(token)
     if not result:
         return render_template_string(RESULTS_404_TEMPLATE), 404
     return render_template_string(

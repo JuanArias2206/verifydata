@@ -342,6 +342,12 @@ def _schema_statements(pg: bool) -> list[str]:
             personas         {jsont} NOT NULL DEFAULT '[]',
             last_update      REAL NOT NULL DEFAULT 0
         )""",
+        # --- credit_results: resultados del check integral crediticio ---
+        f"""CREATE TABLE IF NOT EXISTS credit_results (
+            token       TEXT PRIMARY KEY,
+            result      {jsont} NOT NULL,
+            created_at  {ts} NOT NULL DEFAULT ({now})
+        )""",
     ]
     return stmts
 
@@ -659,6 +665,35 @@ def nit_run_state_get(token: str) -> dict | None:
             if isinstance(d.get(key), str):
                 d[key] = _json_mod.loads(d[key])
         return d
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Credit Results persistence
+# ═══════════════════════════════════════════════════════════════════
+def credit_result_save(token: str, result: dict) -> None:
+    """Guarda el resultado del check integral en credit_results."""
+    import json
+    result_json = json.dumps(result, ensure_ascii=False, default=str)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO credit_results (token, result) VALUES (?, ?)",
+            (token, result_json))
+        conn.commit()
+
+
+def credit_result_get(token: str) -> dict | None:
+    """Lee el resultado del check integral desde credit_results."""
+    import json
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT result FROM credit_results WHERE token=?", (token,)
+        ).fetchone()
+        if not row:
+            return None
+        result = row["result"]
+        if isinstance(result, str):
+            result = json.loads(result)
+        return result
 
 
 if __name__ == "__main__":
