@@ -381,15 +381,39 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     if rsales:
         # Cartera
         story.append(Paragraph('Posición de Cartera', S['subsection']))
+        cartera_total = rsales.get("cartera_total", 0)
+        cartera_vencida = rsales.get("cartera_vencida", 0)
+        cartera_corriente = rsales.get("cartera_corriente", 0)
+        pct_vencida = rsales.get("pct_vencida", 0)
+
         cartera_data = [
             ['MÉTRICA', 'VALOR', 'Detalle'],
-            ['Cartera Total', f'${rsales.get("cartera_total", 0):,.0f}', ''],
-            ['Cartera Vencida', f'${rsales.get("cartera_vencida", 0):,.0f}', f'{rsales.get("pct_vencida", 0):.1f}% del total'],
-            ['Cartera Corriente', f'${rsales.get("cartera_corriente", 0):,.0f}', f'{100-rsales.get("pct_vencida", 0):.1f}% del total'],
+            ['Cartera Total', f'${cartera_total:,.0f}', ''],
+            ['Cartera Vencida', f'${cartera_vencida:,.0f}', f'{pct_vencida:.1f}% del total'],
+            ['Cartera Corriente', f'${cartera_corriente:,.0f}', f'{100-pct_vencida:.1f}% del total'],
             ['Días Mora Máxima', f'{rsales.get("dias_mora_max", 0)} días', ''],
+            ['Documentos Vencidos', str(rsales.get("documentos_vencidos", 0)), ''],
         ]
         story.append(_make_table(cartera_data, [2*inch, 2*inch, 2.5*inch], 'primary'))
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1, 8))
+
+        # Indicador visual de mora
+        if pct_vencida > 0:
+            mora_color = 'danger' if pct_vencida > 30 else ('warning' if pct_vencida > 15 else 'success')
+            mora_label = 'ALTO RIESGO' if pct_vencida > 30 else ('RIESGO MODERADO' if pct_vencida > 15 else 'BAJO RIESGO')
+            mora_data = [[f'INDICADOR DE MORA: {pct_vencida:.1f}% cartera vencida — {mora_label}']]
+            mora_table = Table(mora_data, colWidths=[6.5*inch])
+            mora_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), _hex(mora_color + '_dark')),
+                ('TEXTCOLOR', (0, 0), (-1, -1), _hex('white')),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 11),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('TOPPADDING', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+            ]))
+            story.append(mora_table)
+            story.append(Spacer(1, 12))
 
         # Compras
         story.append(Paragraph('Historial de Compras RSALES', S['subsection']))
@@ -404,7 +428,8 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
         story.append(_make_table(compras_data, [3*inch, 3.5*inch], 'success'))
     else:
         story.append(Paragraph(
-            '<i>Cliente no encontrado en RSALES — sin historial comercial disponible</i>',
+            '<i>Cliente no encontrado en RSALES — sin historial comercial disponible. '
+            'Esto puede indicar que es un cliente nuevo sin operaciones previas.</i>',
             S['body']
         ))
 
@@ -560,7 +585,30 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     if justificacion:
         story.append(Paragraph('DETALLE DEL MONTO RECOMENDADO', S['subsection']))
         story.append(Paragraph(justificacion, S['body']))
-        story.append(Spacer(1, 16))
+        story.append(Spacer(1, 12))
+
+    # Observaciones
+    observaciones = result.get('observaciones', '')
+    if observaciones:
+        story.append(Paragraph('OBSERVACIONES', S['subsection']))
+        story.append(Paragraph(observaciones, S['body']))
+        story.append(Spacer(1, 12))
+
+    # Resumen de hallazgos
+    story.append(Paragraph('RESUMEN DE HALLAZGOS', S['subsection']))
+    hallazgos_data = [
+        ['ITEM', 'RESULTADO'],
+        ['Score crediticio', f'{score}/1000 — Nivel {nivel}'],
+        ['Decisión', badge_text],
+        ['Monto recomendado', f'${monto:,.0f}'],
+        ['Antecedentes verificados', f'{len(ant)} fuentes'],
+        ['Coincidencias encontradas', str(found) if found else 'Ninguna'],
+        ['Documentación', f'{docs_count}/{len(doc_labels)} documentos'],
+        ['Factores positivos', str(len(positivos))],
+        ['Factores negativos', str(len(negativos))],
+    ]
+    story.append(_make_table(hallazgos_data, [3*inch, 3.5*inch], 'gray_dark'))
+    story.append(Spacer(1, 16))
 
     # Espacio para firmas
     story.append(Spacer(1, 40))
