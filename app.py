@@ -1778,45 +1778,6 @@ function _llenarFormulario(s) {
   toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + tags);
 }
 
-  // Compra mínima/máxima = estimadas desde promedio
-  document.getElementById('cr-cmin').value = s.compra_minima || (promedio > 0 ? Math.round(promedio * 0.3) : 0);
-  document.getElementById('cr-cmax').value = s.compra_maxima || (promedio > 0 ? Math.round(promedio * 2.5) : 0);
-
-  // Número de compras
-  document.getElementById('cr-ncompras').value = s.numero_compras || (promedio > 0 ? Math.floor(Math.random() * 15) + 5 : 0);
-
-  // Año del dato
-  document.getElementById('cr-ano').value = s.ano_dato_compras || 2026;
-
-  // Promedio pago días
-  document.getElementById('cr-ppago').value = s.promedio_pago_dias || 30;
-
-  // Calificación datacrédito
-  document.getElementById('cr-dc').value = s.calificacion_datacredito || (600 + Math.floor(Math.random() * 200));
-
-  // Consultas 6 meses
-  document.getElementById('cr-cons6m').value = s.consultas_6m_sector_real || String(Math.floor(Math.random() * 5) + 1);
-
-  // Checkboxes
-  document.getElementById('cr-mora').checked = !!s.presenta_mora;
-  document.getElementById('cr-castigada').checked = !!s.presenta_cartera_castigada;
-  document.getElementById('cr-aprobacion').checked = !!s.aprobacion;
-
-  // Observaciones
-  document.getElementById('cr-obs').value = s.observaciones || '';
-
-  // Fecha expedición (nuevo campo)
-  var feExp = document.getElementById('cr-feexp');
-  if (feExp) feExp.value = s.fecha_expedicion || '';
-
-  CEDULA_ACTUAL = s.cedula_nit;
-  document.getElementById('subjects-list').classList.add('hidden');
-  var tags = '';
-  if (s.mora) tags += ' &#9888;MORA';
-  if (s.castigada) tags += ' &#9888;CASTIGO';
-  toast('Sujeto ' + SUBJECT_INDEX + '/' + SUBJECTS.length + ': ' + (s.nombre||'').slice(0,35) + tags);
-}
-
 function renderSubjects(list) {
   var html = '';
   for (var i = 0; i < list.length; i++) {
