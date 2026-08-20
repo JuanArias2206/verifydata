@@ -1,14 +1,8 @@
 """
-credit_report.py — Generador de PDF para reportes de crédito.
+credit_report.py — Generador de PDF premium para reportes de crédito.
 
-Genera un PDF profesional con toda la información del perfil crediticio:
-- Portada con branding VerifyData
-- Resumen ejecutivo (score, nivel, recomendación)
-- Historial comercial RSALES
-- Antecedentes y listas restrictivas
-- Documentación adjunta
-- Justificación del monto
-- Factor de riesgo detallado
+Genera un PDF profesional y impactante con toda la información del perfil
+crediticio, diseñado como documento comercial vendible.
 """
 from __future__ import annotations
 import os
@@ -20,247 +14,465 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch, mm
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak, HRFlowable, Image
+    PageBreak, HRFlowable, KeepTogether
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.graphics.shapes import Drawing, Circle, String, Line
+from reportlab.graphics import renderPDF
 
 ROOT = Path(__file__).parent
 
+# ═══ PALETA DE COLORES CORPORATIVA ═══
+COLORS = {
+    'primary': '#4299e1',      # Azul principal
+    'primary_dark': '#2b6cb0',
+    'success': '#48bb78',      # Verde (aprobado)
+    'success_dark': '#276749',
+    'warning': '#ed8936',      # Naranja (medio)
+    'warning_dark': '#c05621',
+    'danger': '#f56565',       # Rojo (rechazado)
+    'danger_dark': '#c53030',
+    'purple': '#805ad5',       # Púrpura (antecedentes)
+    'gray': '#718096',
+    'gray_light': '#e2e8f0',
+    'gray_dark': '#2d3748',
+    'bg_light': '#f7fafc',
+    'bg_blue': '#ebf8ff',
+    'bg_purple': '#faf5ff',
+    'bg_green': '#f0fff4',
+    'bg_red': '#fff5f5',
+    'white': '#ffffff',
+    'black': '#1a1a2e',
+}
+
+
+def _hex(color_key: str) -> colors.Color:
+    """Convierte color key a ReportLab Color."""
+    return colors.HexColor(COLORS.get(color_key, '#000000'))
+
+
+def _make_styles():
+    """Crea todos los estilos personalizados del PDF."""
+    base = getSampleStyleSheet()
+
+    styles = {}
+
+    # Títulos
+    styles['title'] = ParagraphStyle(
+        'PTitle', parent=base['Title'],
+        fontSize=28, leading=32, spaceAfter=4,
+        textColor=_hex('black'), fontName='Helvetica-Bold'
+    )
+    styles['subtitle'] = ParagraphStyle(
+        'PSubtitle', parent=base['Normal'],
+        fontSize=13, leading=16, spaceAfter=20,
+        textColor=_hex('gray')
+    )
+    styles['section'] = ParagraphStyle(
+        'PSection', parent=base['Heading2'],
+        fontSize=15, leading=18, spaceBefore=18, spaceAfter=10,
+        textColor=_hex('gray_dark'), fontName='Helvetica-Bold',
+        borderWidth=0, borderPadding=0
+    )
+    styles['subsection'] = ParagraphStyle(
+        'PSubsection', parent=base['Heading3'],
+        fontSize=12, leading=15, spaceBefore=12, spaceAfter=6,
+        textColor=_hex('primary_dark'), fontName='Helvetica-Bold'
+    )
+
+    # Cuerpo
+    styles['body'] = ParagraphStyle(
+        'PBody', parent=base['Normal'],
+        fontSize=10, leading=14, spaceAfter=6,
+        textColor=_hex('gray_dark')
+    )
+    styles['small'] = ParagraphStyle(
+        'PSmall', parent=base['Normal'],
+        fontSize=8, leading=11, textColor=_hex('gray')
+    )
+    styles['tiny'] = ParagraphStyle(
+        'PTiny', parent=base['Normal'],
+        fontSize=7, leading=9, textColor=_hex('gray')
+    )
+
+    # Especiales
+    styles['kpi_value'] = ParagraphStyle(
+        'KPIValue', parent=base['Normal'],
+        fontSize=28, leading=32, alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    styles['kpi_label'] = ParagraphStyle(
+        'KPILabel', parent=base['Normal'],
+        fontSize=8, leading=10, alignment=TA_CENTER,
+        textColor=_hex('gray'), spaceAfter=4
+    )
+    styles['badge'] = ParagraphStyle(
+        'Badge', parent=base['Normal'],
+        fontSize=16, leading=20, alignment=TA_CENTER,
+        fontName='Helvetica-Bold', textColor=_hex('white')
+    )
+    styles['center'] = ParagraphStyle(
+        'Center', parent=base['Normal'],
+        fontSize=10, leading=14, alignment=TA_CENTER
+    )
+    styles['right'] = ParagraphStyle(
+        'Right', parent=base['Normal'],
+        fontSize=10, leading=14, alignment=TA_RIGHT
+    )
+
+    return styles
+
+
+def _make_table(data, col_widths, header_color='primary', style_overrides=None):
+    """Crea una tabla con estilo estándar."""
+    t = Table(data, colWidths=col_widths)
+    base_style = [
+        ('BACKGROUND', (0, 0), (-1, 0), _hex(header_color)),
+        ('TEXTCOLOR', (0, 0), (-1, 0), _hex('white')),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 0.5, _hex('gray_light')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [_hex('white'), _hex('bg_light')]),
+    ]
+    if style_overrides:
+        base_style.extend(style_overrides)
+    t.setStyle(TableStyle(base_style))
+    return t
+
 
 def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
-    """Genera un PDF del perfil crediticio completo."""
+    """Genera un PDF premium del perfil crediticio completo."""
     if output_path is None:
         output_path = str(ROOT / "data" / "credit_report.pdf")
 
     doc = SimpleDocTemplate(
-        output_path,
-        pagesize=letter,
-        rightMargin=50,
-        leftMargin=50,
-        topMargin=60,
-        bottomMargin=60,
+        output_path, pagesize=letter,
+        rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=60,
     )
 
-    styles = getSampleStyleSheet()
+    S = _make_styles()
     story = []
-
-    # Estilos personalizados
-    title_style = ParagraphStyle(
-        'CustomTitle', parent=styles['Title'],
-        fontSize=24, spaceAfter=6, textColor=colors.HexColor('#1a1a2e')
-    )
-    subtitle_style = ParagraphStyle(
-        'CustomSubtitle', parent=styles['Normal'],
-        fontSize=12, textColor=colors.HexColor('#666666'), spaceAfter=20
-    )
-    section_style = ParagraphStyle(
-        'SectionTitle', parent=styles['Heading2'],
-        fontSize=14, textColor=colors.HexColor('#2d3748'),
-        spaceBefore=16, spaceAfter=8, borderWidth=0,
-        borderPadding=0, borderColor=colors.HexColor('#e2e8f0')
-    )
-    body_style = ParagraphStyle(
-        'CustomBody', parent=styles['Normal'],
-        fontSize=10, leading=14, spaceAfter=6
-    )
-    small_style = ParagraphStyle(
-        'SmallText', parent=styles['Normal'],
-        fontSize=8, textColor=colors.HexColor('#718096')
-    )
 
     p = result.get('perfil_crediticio', {})
     res = result.get('resumen_ejecutivo', {})
     ant = result.get('antecedentes', {})
+    rsales = p.get('rsales')
 
-    # ═══ PORTADA ═══
-    story.append(Spacer(1, 40))
-    story.append(Paragraph("REPORTE DE ANÁLISIS DE RIESGO CREDITICIO", title_style))
-    story.append(Paragraph("VerifyData — Inteligencia de datos para decisiones seguras", subtitle_style))
-    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#4299e1')))
-    story.append(Spacer(1, 20))
+    nivel = p.get('nivel_riesgo', 'NO_EVALUADO')
+    score = p.get('score', 0)
+    aprobado = res.get('aprobado', False)
+    monto = res.get('monto_maximo', 0)
+    nivel_color = {'BAJO': 'success', 'MEDIO': 'warning', 'ALTO': 'danger', 'CRITICO': 'danger'}.get(nivel, 'gray')
 
-    # Datos del cliente
+    # ═══════════════════════════════════════════════════════════════
+    #  PÁGINA 1: PORTADA
+    # ═══════════════════════════════════════════════════════════════
+    story.append(Spacer(1, 30))
+
+    # Header VerifyData
+    header_data = [['VerifyData', 'INFORME DE ANÁLISIS DE RIESGO CREDITICIO']]
+    header_table = Table(header_data, colWidths=[2*inch, 4.5*inch])
+    header_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, 0), _hex('primary')),
+        ('TEXTCOLOR', (0, 0), (0, 0), _hex('white')),
+        ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (0, 0), 16),
+        ('BACKGROUND', (1, 0), (1, 0), _hex('gray_dark')),
+        ('TEXTCOLOR', (1, 0), (1, 0), _hex('white')),
+        ('FONTNAME', (1, 0), (1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (1, 0), (1, 0), 14),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 16),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 16),
+        ('LEFTPADDING', (0, 0), (-1, -1), 20),
+    ]))
+    story.append(header_table)
+    story.append(Spacer(1, 30))
+
+    # Badge de decisión
+    badge_bg = _hex('success') if aprobado else _hex('danger')
+    badge_text = 'APROBADO' if aprobado else 'RECHAZADO'
+    badge_icon = '✓' if aprobado else '✗'
+
+    badge_data = [[f'{badge_icon}  {badge_text}  —  Riesgo {nivel}']]
+    badge_table = Table(badge_data, colWidths=[6.5*inch])
+    badge_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), badge_bg),
+        ('TEXTCOLOR', (0, 0), (-1, -1), _hex('white')),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 18),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 14),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
+        ('ROUNDEDCORNERS', [8, 8, 8, 8]),
+    ]))
+    story.append(badge_table)
+    story.append(Spacer(1, 24))
+
+    # Datos del cliente + Score lado a lado
     client_data = [
         ['DATOS DEL CLIENTE', ''],
         ['Nombre:', result.get('nombre', '')],
         ['CC/NIT:', result.get('cedula_nit', '')],
         ['Fecha de solicitud:', result.get('fecha_solicitud', 'N/A')],
         ['Tipo de solicitud:', result.get('tipo_solicitud', 'N/A')],
+        ['Ingreso mensual:', f'${result.get("ingreso_mensual", 0):,.0f}'],
+        ['Fuente de ingreso:', result.get('fuente_ingreso', 'N/A')],
     ]
-    client_table = Table(client_data, colWidths=[2*inch, 4.5*inch])
-    client_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4299e1')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 1), (-1, -1), 10),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
-    ]))
+    client_table = _make_table(client_data, [2.2*inch, 4.3*inch], 'gray_dark')
     story.append(client_table)
-    story.append(Spacer(1, 20))
+    story.append(Spacer(1, 16))
 
-    # ═══ RESUMEN EJECUTIVO ═══
-    story.append(Paragraph("RESUMEN EJECUTIVO", section_style))
-
-    score = p.get('score', 0)
-    nivel = p.get('nivel_riesgo', 'NO_EVALUADO')
-    aprobado = res.get('aprobado', False)
-    monto = res.get('monto_maximo', 0)
-
-    nivel_color = {
-        'BAJO': '#48bb78', 'MEDIO': '#ed8936',
-        'ALTO': '#f56565', 'CRITICO': '#c53030'
-    }.get(nivel, '#718096')
-
-    summary_data = [
-        ['INDICADOR', 'VALOR', 'OBSERVACIÓN'],
-        ['Score Crediticio', str(score) + ' / 1000', f'Nivel: {nivel}'],
-        ['Decisión', 'APROBADO' if aprobado else 'RECHAZADO', p.get('recomendacion', '')],
-        ['Monto Máximo Recomendado', f'${monto:,.0f}', res.get('monto_justificacion', '')[:100]],
-    ]
-    summary_table = Table(summary_data, colWidths=[2*inch, 1.5*inch, 3*inch])
-    summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2d3748')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('BACKGROUND', (1, 1), (1, 1), colors.HexColor(nivel_color + '20')),
-    ]))
-    story.append(summary_table)
-    story.append(Spacer(1, 12))
-
-    # ═══ INFORMACIÓN FINANCIERA ═══
-    story.append(Paragraph("INFORMACIÓN FINANCIERA", section_style))
-
-    fin_data = [
-        ['CONCEPTO', 'VALOR'],
-        ['Crédito Actual', f'${result.get("credito_actual", 0):,.0f}'],
-        ['Monto Solicitado', f'${result.get("monto_solicitar", 0):,.0f}'],
-        ['Cupo Inicial', f'${result.get("cupo_inicial", 0):,.0f}'],
-        ['Ingreso Mensual', f'${result.get("ingreso_mensual", 0):,.0f}'],
-        ['Fuente de Ingreso', result.get('fuente_ingreso', 'N/A')],
-        ['Actividad Económica', result.get('actividad_economica', 'N/A')],
-        ['Promedio Compras', f'${result.get("promedio_compras", 0):,.0f}'],
-        ['Compra Mínima', f'${result.get("compra_minima", 0):,.0f}'],
-        ['Compra Máxima', f'${result.get("compra_maxima", 0):,.0f}'],
-        ['Número de Compras', str(result.get('numero_compras', 0))],
-        ['Promedio Pago (días)', str(result.get('promedio_pago_dias', 0))],
-        ['Patrimonio Estimado', f'${result.get("patrimonio", 0):,.0f}'],
-        ['Endeudamiento Total', f'${result.get("endeudamiento", 0):,.0f}'],
-    ]
-    fin_table = Table(fin_data, colWidths=[3*inch, 3.5*inch])
-    fin_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4a5568')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+    # KPIs principales
+    ant_count = sum(1 for v in ant.values() if not v.get('matched') and not v.get('error'))
+    kpi_data = [[
+        Paragraph(f'<font color="{COLORS[nivel_color]}">{score}</font>', S['kpi_value']),
+        Paragraph(f'<font color="{COLORS[nivel_color]}">{nivel}</font>', S['kpi_value']),
+        Paragraph(f'<font color="{COLORS["purple"]}">${monto:,.0f}</font>', S['kpi_value']),
+        Paragraph(f'<font color="{COLORS["primary"]}">{ant_count}/{len(ant)}</font>', S['kpi_value']),
+    ], [
+        Paragraph('Score / 1000', S['kpi_label']),
+        Paragraph('Nivel de Riesgo', S['kpi_label']),
+        Paragraph('Monto Máximo', S['kpi_label']),
+        Paragraph('Listas Limpias', S['kpi_label']),
+    ]]
+    kpi_table = Table(kpi_data, colWidths=[1.625*inch]*4)
+    kpi_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), _hex('bg_light')),
+        ('GRID', (0, 0), (-1, -1), 0.5, _hex('gray_light')),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 5),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f7fafc')]),
+        ('TOPPADDING', (0, 0), (-1, 0), 16),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
+        ('TOPPADDING', (0, 1), (-1, 1), 0),
+        ('BOTTOMPADDING', (0, 1), (-1, 1), 12),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
     ]))
-    story.append(fin_table)
+    story.append(kpi_table)
+
+    story.append(PageBreak())
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PÁGINA 2: RESUMEN EJECUTIVO + JUSTIFICACIÓN
+    # ═══════════════════════════════════════════════════════════════
+    story.append(Paragraph('RESUMEN EJECUTIVO', S['section']))
+    story.append(HRFlowable(width="100%", thickness=1, color=_hex('gray_light')))
+    story.append(Spacer(1, 8))
+
+    # Decisión y fórmula
+    decision_data = [
+        ['INDICADOR', 'VALOR', 'OBSERVACIÓN'],
+        ['Score Crediticio', f'{score} / 1000', f'Nivel: {nivel}'],
+        ['Decisión', badge_text, p.get('recomendacion', '')],
+        ['Monto Máximo', f'${monto:,.0f}', 'Ver justificación abajo'],
+        ['Tasa de endeudamiento', f'{(result.get("endeudamiento",0)/max(result.get("ingreso_mensual",1),1)*100):.1f}%', ' Endeudamiento / Ingreso mensual'],
+        ['Capacidad de pago', f'{(result.get("ingreso_mensual",0)*0.3):,.0f}', '30% del ingreso mensual'],
+    ]
+    story.append(_make_table(decision_data, [2*inch, 1.5*inch, 3*inch], 'gray_dark'))
+    story.append(Spacer(1, 16))
+
+    # Justificación del monto
+    justificacion = res.get('monto_justificacion', '')
+    if justificacion:
+        story.append(Paragraph('JUSTIFICACIÓN DEL MONTO MÁXIMO', S['subsection']))
+
+        # Desglose visual
+        ventas = result.get('promedio_compras', 0) * result.get('numero_compras', 0)
+        capacidad = ventas * 0.30
+        mult = {'BAJO': 1.0, 'MEDIO': 0.6, 'ALTO': 0.3, 'CRITICO': 0}.get(nivel, 0)
+
+        formula_data = [
+            ['PASO', 'CONCEPTO', 'VALOR'],
+            ['1', 'Ventas anuales estimadas', f'${ventas:,.0f}'],
+            ['2', 'Capacidad de pago (30%)', f'${capacidad:,.0f}'],
+            ['3', f'Multiplicador por riesgo {nivel}', f'×{mult}'],
+            ['4', 'Monto máximo recomendado', f'${monto:,.0f}'],
+        ]
+        story.append(_make_table(formula_data, [0.6*inch, 3*inch, 2.9*inch], 'purple'))
+        story.append(Spacer(1, 12))
+
+    # Resumen de antecedentes
+    story.append(Paragraph('RESUMEN DE VERIFICACIONES', S['subsection']))
+    clean = sum(1 for v in ant.values() if not v.get('matched') and not v.get('error'))
+    found = sum(1 for v in ant.values() if v.get('matched'))
+    errors = sum(1 for v in ant.values() if v.get('error'))
+
+    resumen_data = [
+        ['CATEGORÍA', 'CANTIDAD', 'ESTADO'],
+        ['Listas verificadas', str(len(ant)), ''],
+        ['Sin coincidencias', str(clean), '✓ LIMPIO'],
+        ['Con coincidencias', str(found), '✗ ENCONTRADO' if found else '—'],
+        ['Con errores', str(errors), '⚠ ERROR' if errors else '—'],
+    ]
+    story.append(_make_table(resumen_data, [2.5*inch, 1.5*inch, 2.5*inch], 'primary'))
+
+    story.append(PageBreak())
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PÁGINA 3: PERFIL FINANCIERO
+    # ═══════════════════════════════════════════════════════════════
+    story.append(Paragraph('PERFIL FINANCIERO', S['section']))
+    story.append(HRFlowable(width="100%", thickness=1, color=_hex('gray_light')))
+    story.append(Spacer(1, 8))
+
+    # Ingresos y capacidad
+    story.append(Paragraph('Ingresos y Capacidad de Pago', S['subsection']))
+    ing_data = [
+        ['CONCEPTO', 'VALOR', 'OBSERVACIÓN'],
+        ['Ingreso mensual', f'${result.get("ingreso_mensual", 0):,.0f}', result.get('fuente_ingreso', '')],
+        ['Ingreso anual estimado', f'${result.get("ingreso_mensual", 0)*12:,.0f}', 'Ingreso × 12'],
+        ['Capacidad de pago (30%)', f'${result.get("ingreso_mensual", 0)*0.3:,.0f}', 'Máximo recomendado'],
+        ['Endeudamiento total', f'${result.get("endeudamiento", 0):,.0f}', ''],
+        ['Patrimonio estimado', f'${result.get("patrimonio", 0):,.0f}', ''],
+    ]
+    story.append(_make_table(ing_data, [2.2*inch, 2*inch, 2.3*inch], 'primary'))
     story.append(Spacer(1, 12))
 
-    # ═══ HISTORIAL RSALES ═══
-    rsales = p.get('rsales')
-    if rsales:
-        story.append(Paragraph("HISTORIAL COMERCIAL — RSALES", section_style))
+    # Ratios financieros
+    story.append(Paragraph('Ratios Financieros', S['subsection']))
+    ing_mensual = max(result.get('ingreso_mensual', 1), 1)
+    endeudamiento = result.get('endeudamiento', 0)
+    patrimonio = result.get('patrimonio', 1)
 
-        rsales_data = [
+    ratio_endeud = (endeudamiento / ing_mensual) if ing_mensual > 0 else 0
+    ratio_compras = (result.get('promedio_compras', 0) / max(result.get('credito_actual', 1), 1))
+    ratio_capacidad = (result.get('ingreso_mensual', 0) * 0.3 / max(result.get('credito_actual', 1), 1))
+
+    ratio_data = [
+        ['RATIO', 'VALOR', 'REFERENCIA', 'ESTADO'],
+        ['Endeudamiento / Ingreso', f'{ratio_endeud:.1f}x', '< 3.0x', '✓' if ratio_endeud < 3 else '✗'],
+        ['Compras / Crédito actual', f'{ratio_compras:.1f}x', '< 2.0x', '✓' if ratio_compras < 2 else '✗'],
+        ['Capacidad / Crédito', f'{ratio_capacidad:.1f}x', '> 0.5x', '✓' if ratio_capacidad > 0.5 else '✗'],
+        ['Patrimonio / Endeudamiento', f'{patrimonio/max(endeudamiento,1):.1f}x', '> 1.5x', '✓' if patrimonio/max(endeudamiento,1) > 1.5 else '✗'],
+    ]
+    story.append(_make_table(ratio_data, [2.2*inch, 1.2*inch, 1.5*inch, 1.6*inch], 'warning'))
+    story.append(Spacer(1, 12))
+
+    # Historial de compras
+    story.append(Paragraph('Historial de Compras', S['subsection']))
+    compra_data = [
+        ['CONCEPTO', 'VALOR'],
+        ['Promedio compras', f'${result.get("promedio_compras", 0):,.0f}'],
+        ['Compra mínima', f'${result.get("compra_minima", 0):,.0f}'],
+        ['Compra máxima', f'${result.get("compra_maxima", 0):,.0f}'],
+        ['Número de compras', str(result.get('numero_compras', 0))],
+        ['Año del dato', str(result.get('ano_dato_compras', 2026))],
+        ['Promedio pago (días)', f'{result.get("promedio_pago_dias", 0)} días'],
+        ['Crédito actual', f'${result.get("credito_actual", 0):,.0f}'],
+        ['Monto solicitado', f'${result.get("monto_solicitar", 0):,.0f}'],
+        ['Cupo inicial', f'${result.get("cupo_inicial", 0):,.0f}'],
+    ]
+    story.append(_make_table(compra_data, [3*inch, 3.5*inch], 'success'))
+
+    story.append(PageBreak())
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PÁGINA 4: HISTORIAL RSALES
+    # ═══════════════════════════════════════════════════════════════
+    story.append(Paragraph('HISTORIAL COMERCIAL — RSALES', S['section']))
+    story.append(HRFlowable(width="100%", thickness=1, color=_hex('gray_light')))
+    story.append(Spacer(1, 8))
+
+    if rsales:
+        # Cartera
+        story.append(Paragraph('Posición de Cartera', S['subsection']))
+        cartera_data = [
+            ['MÉTRICA', 'VALOR', 'Detalle'],
+            ['Cartera Total', f'${rsales.get("cartera_total", 0):,.0f}', ''],
+            ['Cartera Vencida', f'${rsales.get("cartera_vencida", 0):,.0f}', f'{rsales.get("pct_vencida", 0):.1f}% del total'],
+            ['Cartera Corriente', f'${rsales.get("cartera_corriente", 0):,.0f}', f'{100-rsales.get("pct_vencida", 0):.1f}% del total'],
+            ['Días Mora Máxima', f'{rsales.get("dias_mora_max", 0)} días', ''],
+        ]
+        story.append(_make_table(cartera_data, [2*inch, 2*inch, 2.5*inch], 'primary'))
+        story.append(Spacer(1, 12))
+
+        # Compras
+        story.append(Paragraph('Historial de Compras RSALES', S['subsection']))
+        compras_data = [
             ['MÉTRICA', 'VALOR'],
-            ['Cartera Total', f'${rsales.get("cartera_total", 0):,.0f}'],
-            ['Cartera Vencida', f'${rsales.get("cartera_vencida", 0):,.0f} ({rsales.get("pct_vencida", 0):.1f}%)'],
-            ['Cartera Corriente', f'${rsales.get("cartera_corriente", 0):,.0f}'],
-            ['Días Mora Máxima', f'{rsales.get("dias_mora_max", 0)} días'],
             ['Compras Totales', f'${rsales.get("compras_total", 0):,.0f}'],
             ['Número de Pedidos', str(rsales.get("num_pedidos", 0))],
             ['Promedio Pedido', f'${rsales.get("promedio_pedido", 0):,.0f}'],
             ['Última Compra', rsales.get("ultima_compra_fecha", "N/A") or "N/A"],
             ['Visitas 12 meses', str(rsales.get("visitas_12m", 0))],
         ]
-        rsales_table = Table(rsales_data, colWidths=[3*inch, 3.5*inch])
-        rsales_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3182ce')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 1), (-1, -1), 9),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#ebf8ff')]),
-        ]))
-        story.append(rsales_table)
-        story.append(Spacer(1, 12))
+        story.append(_make_table(compras_data, [3*inch, 3.5*inch], 'success'))
+    else:
+        story.append(Paragraph(
+            '<i>Cliente no encontrado en RSALES — sin historial comercial disponible</i>',
+            S['body']
+        ))
 
-    # ═══ ANTECEDENTES ═══
-    story.append(Paragraph("ANTECEDENTES Y LISTAS RESTRICTIVAS", section_style))
+    story.append(PageBreak())
 
-    ant_data = [['FUENTE', 'ESTADO', 'DETALLE']]
+    # ═══════════════════════════════════════════════════════════════
+    #  PÁGINA 5: ANTECEDENTES
+    # ═══════════════════════════════════════════════════════════════
+    story.append(Paragraph('ANTECEDENTES Y LISTAS RESTRICTIVAS', S['section']))
+    story.append(HRFlowable(width="100%", thickness=1, color=_hex('gray_light')))
+    story.append(Spacer(1, 8))
+
+    ant_data = [['FUENTE', 'ESTADO', 'DETALLE', 'TIEMPO']]
     for k, v in ant.items():
-        estado = 'ENCONTRADO' if v.get('matched') else ('ERROR' if v.get('error') else 'LIMPIO')
-        detalle = v.get('summary', '')[:80] if v.get('summary') else ''
-        ant_data.append([k, estado, detalle])
+        if v.get('matched'):
+            estado = '✗ ENCONTRADO'
+            color = 'danger'
+        elif v.get('error'):
+            estado = '⚠ ERROR'
+            color = 'warning'
+        else:
+            estado = '✓ LIMPIO'
+            color = 'success'
 
-    ant_table = Table(ant_data, colWidths=[1.8*inch, 1.2*inch, 3.5*inch])
-    ant_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#805ad5')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        detalle = (v.get('summary', '') or '')[:60]
+        tiempo = f'{v.get("elapsed_s", 0):.1f}s'
+        ant_data.append([k, estado, detalle, tiempo])
+
+    ant_table = Table(ant_data, colWidths=[1.6*inch, 1.3*inch, 2.8*inch, 0.8*inch])
+    ant_style = [
+        ('BACKGROUND', (0, 0), (-1, 0), _hex('purple')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), _hex('white')),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, 0), 10),
         ('FONTSIZE', (0, 1), (-1, -1), 8),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+        ('GRID', (0, 0), (-1, -1), 0.5, _hex('gray_light')),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#faf5ff')]),
-    ]))
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [_hex('white'), _hex('bg_purple')]),
+    ]
+    ant_table.setStyle(TableStyle(ant_style))
     story.append(ant_table)
     story.append(Spacer(1, 12))
 
-    # ═══ BLOQUEANTES ═══
+    # Bloqueantes
     bloqueantes = res.get('bloqueantes', [])
     if bloqueantes:
-        story.append(Paragraph("⚠ BLOQUEANTES ENCONTRADOS", ParagraphStyle(
-            'BlockTitle', parent=styles['Heading2'],
-            fontSize=13, textColor=colors.HexColor('#c53030'),
-            spaceBefore=12, spaceAfter=6
-        )))
+        story.append(Paragraph('BLOQUEANTES ENCONTRADOS', S['subsection']))
         for b in bloqueantes:
-            story.append(Paragraph(f"• {b}", ParagraphStyle(
-                'BlockItem', parent=body_style,
-                textColor=colors.HexColor('#9b2c2c'),
-                leftIndent=20, spaceBefore=2, spaceAfter=2
-            )))
+            story.append(Paragraph(
+                f'<font color="{COLORS["danger"]}">✗ {b}</font>',
+                S['body']
+            ))
         story.append(Spacer(1, 8))
 
-    # ═══ DOCUMENTACIÓN ═══
+    story.append(PageBreak())
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PÁGINA 6: DOCUMENTACIÓN + FACTORES
+    # ═══════════════════════════════════════════════════════════════
+    story.append(Paragraph('DOCUMENTACIÓN Y ANÁLISIS DE RIESGO', S['section']))
+    story.append(HRFlowable(width="100%", thickness=1, color=_hex('gray_light')))
+    story.append(Spacer(1, 8))
+
+    # Documentos
     docs = p.get('docs', {})
-    docs_count = sum(1 for v in docs.values() if v)
-    docs_total = len(docs) if docs else 0
-
-    story.append(Paragraph(f"DOCUMENTACIÓN ADJUNTA ({docs_count}/{docs_total})", section_style))
-
     doc_labels = {
         'cedula_frontal': 'Cédula Frontal',
         'cedula_posterior': 'Cédula Posterior',
@@ -269,104 +481,122 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
         'estados_financieros': 'Estados Financieros',
         'declaracion_renta': 'Declaración de Renta'
     }
+    docs_count = sum(1 for v in docs.values() if v)
 
+    story.append(Paragraph(f'Documentación Adjunta ({docs_count}/{len(doc_labels)})', S['subsection']))
     doc_data = [['DOCUMENTO', 'ESTADO']]
     for dk, dl in doc_labels.items():
         ok = docs.get(dk, False)
         doc_data.append([dl, '✓ Adjuntado' if ok else '✗ No adjuntado'])
 
-    doc_table = Table(doc_data, colWidths=[3*inch, 3.5*inch])
-    doc_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#38a169')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 5),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0fff4')]),
-    ]))
-    story.append(doc_table)
-    story.append(Spacer(1, 12))
-
-    # ═══ FACTORES DE RIESGO ═══
-    story.append(Paragraph("ANÁLISIS DE FACTORES DE RIESGO", section_style))
-
-    # Factores positivos
-    positivos = p.get('factores_positivos', [])
-    if positivos:
-        story.append(Paragraph("Factores Positivos:", ParagraphStyle(
-            'PosTitle', parent=body_style, textColor=colors.HexColor('#276749'),
-            fontName='Helvetica-Bold', spaceBefore=6
-        )))
-        for f in positivos:
-            story.append(Paragraph(f"✓ {f}", ParagraphStyle(
-                'PosItem', parent=body_style, leftIndent=20,
-                textColor=colors.HexColor('#276749'), spaceBefore=2
-            )))
-
-    # Factores negativos
-    negativos = p.get('factores_negativos', [])
-    if negativos:
-        story.append(Paragraph("Factores Negativos:", ParagraphStyle(
-            'NegTitle', parent=body_style, textColor=colors.HexColor('#c53030'),
-            fontName='Helvetica-Bold', spaceBefore=6
-        )))
-        for f in negativos:
-            story.append(Paragraph(f"✗ {f}", ParagraphStyle(
-                'NegItem', parent=body_style, leftIndent=20,
-                textColor=colors.HexColor('#c53030'), spaceBefore=2
-            )))
-
-    # Alertas
-    alertas = p.get('alertas', [])
-    if alertas:
-        story.append(Paragraph("Alertas:", ParagraphStyle(
-            'AlertTitle', parent=body_style, textColor=colors.HexColor('#b7791f'),
-            fontName='Helvetica-Bold', spaceBefore=6
-        )))
-        for a in alertas:
-            story.append(Paragraph(f"⚠ {a}", ParagraphStyle(
-                'AlertItem', parent=body_style, leftIndent=20,
-                textColor=colors.HexColor('#b7791f'), spaceBefore=2
-            )))
-
+    story.append(_make_table(doc_data, [3*inch, 3.5*inch], 'success'))
     story.append(Spacer(1, 16))
 
-    # ═══ JUSTIFICACIÓN DEL MONTO ═══
+    # Factores
+    story.append(Paragraph('Análisis de Factores de Riesgo', S['subsection']))
+
+    positivos = p.get('factores_positivos', [])
+    negativos = p.get('factores_negativos', [])
+    alertas = p.get('alertas', [])
+
+    if positivos:
+        story.append(Paragraph(f'<font color="{COLORS["success_dark"]}"><b>Factores Positivos ({len(positivos)})</b></font>', S['body']))
+        for f in positivos:
+            story.append(Paragraph(f'<font color="{COLORS["success"]}">✓</font> {f}', S['body']))
+
+    if negativos:
+        story.append(Paragraph(f'<font color="{COLORS["danger_dark"]}"><b>Factores Negativos ({len(negativos)})</b></font>', S['body']))
+        for f in negativos:
+            story.append(Paragraph(f'<font color="{COLORS["danger"]}">✗</font> {f}', S['body']))
+
+    if alertas:
+        story.append(Paragraph(f'<font color="{COLORS["warning_dark"]}"><b>Alertas ({len(alertas)})</b></font>', S['body']))
+        for a in alertas:
+            story.append(Paragraph(f'<font color="{COLORS["warning"]}">⚠</font> {a}', S['body']))
+
+    story.append(PageBreak())
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PÁGINA 7: RECOMENDACIÓN FINAL
+    # ═══════════════════════════════════════════════════════════════
+    story.append(Paragraph('RECOMENDACIÓN FINAL', S['section']))
+    story.append(HRFlowable(width="100%", thickness=1, color=_hex('gray_light')))
+    story.append(Spacer(1, 16))
+
+    # Recomendación grande
+    rec_bg = _hex('success') if aprobado else _hex('danger')
+    rec_data = [[Paragraph(
+        f'<font color="{COLORS["white"]}" size="16"><b>{p.get("recomendacion", "")}</b></font>',
+        S['center']
+    )]]
+    rec_table = Table(rec_data, colWidths=[6.5*inch])
+    rec_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), rec_bg),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 20),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 20),
+        ('ROUNDEDCORNERS', [8, 8, 8, 8]),
+    ]))
+    story.append(rec_table)
+    story.append(Spacer(1, 20))
+
+    # Condiciones (si aplica)
+    if aprobado and nivel == 'MEDIO':
+        story.append(Paragraph('CONDICIONES DE APROBACIÓN', S['subsection']))
+        condiciones = [
+            'Se aprobará con las siguientes condiciones:',
+            '• Límite de crédito: $' + f'{monto:,.0f}',
+            '• Revisión periódica cada 6 meses',
+            '• Reporte de mora inmediato',
+            '• Documentación completa obligatoria',
+        ]
+        for c in condiciones:
+            story.append(Paragraph(c, S['body']))
+        story.append(Spacer(1, 16))
+
+    # Justificación final del monto
     justificacion = res.get('monto_justificacion', '')
     if justificacion:
-        story.append(Paragraph("JUSTIFICACIÓN DEL MONTO MÁXIMO RECOMENDADO", section_style))
-        story.append(Paragraph(justificacion, body_style))
-        story.append(Spacer(1, 12))
+        story.append(Paragraph('DETALLE DEL MONTO RECOMENDADO', S['subsection']))
+        story.append(Paragraph(justificacion, S['body']))
+        story.append(Spacer(1, 16))
 
-    # ═══ RECOMENDACIÓN FINAL ═══
-    story.append(Paragraph("RECOMENDACIÓN FINAL", section_style))
-    story.append(Paragraph(p.get('recomendacion', ''), ParagraphStyle(
-        'RecFinal', parent=styles['Heading3'],
-        fontSize=14, textColor=colors.HexColor(nivel_color),
-        spaceBefore=8, spaceAfter=12
-    )))
+    # Espacio para firmas
+    story.append(Spacer(1, 40))
+    firma_data = [
+        ['_________________________', '', '_________________________'],
+        ['Evaluador de Crédito', '', 'Aprobador'],
+        ['Fecha: _______________', '', 'Fecha: _______________'],
+    ]
+    firma_table = Table(firma_data, colWidths=[2.5*inch, 1.5*inch, 2.5*inch])
+    firma_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.append(firma_table)
 
-    # ═══ PIE DE PÁGINA ═══
+    # Pie de página
     story.append(Spacer(1, 30))
-    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#e2e8f0')))
+    story.append(HRFlowable(width="100%", thickness=1, color=_hex('gray_light')))
     story.append(Spacer(1, 8))
     story.append(Paragraph(
-        "VerifyData — Documento generado automáticamente | Uso restringido al destinatario",
-        ParagraphStyle('Footer', parent=small_style, alignment=TA_CENTER)
+        'VerifyData — Inteligencia de datos para decisiones seguras',
+        ParagraphStyle('Footer', parent=S['small'], alignment=TA_CENTER, textColor=_hex('gray'))
     ))
     story.append(Paragraph(
-        f"Fecha de generación: {result.get('fecha_solicitud', 'N/A')}",
-        ParagraphStyle('FooterDate', parent=small_style, alignment=TA_CENTER)
+        'Documento generado automáticamente | Uso restringido al destinatario',
+        ParagraphStyle('Footer2', parent=S['tiny'], alignment=TA_CENTER, textColor=_hex('gray'))
+    ))
+    story.append(Paragraph(
+        f'Fecha: {result.get("fecha_solicitud", "N/A")} | Código: CV-{result.get("cedula_nit", "000")}',
+        ParagraphStyle('Footer3', parent=S['tiny'], alignment=TA_CENTER, textColor=_hex('gray'))
     ))
 
     # Construir PDF
     doc.build(story)
 
-    # Leer y devolver bytes
     with open(output_path, 'rb') as f:
         return f.read()
