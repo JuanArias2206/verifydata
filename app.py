@@ -1432,6 +1432,7 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
   .subjects-dropdown .opt{padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px}
   .subjects-dropdown .opt:hover{background:rgba(105,65,244,.06)}
   .subjects-dropdown .opt .sub{color:var(--text-faint);font-size:11px}
+  .hidden{display:none!important}
   .mini-badge{display:inline-block;padding:2px 7px;border-radius:9px;font-size:10px;font-weight:700;margin-left:6px}
   .mini-badge.warn{background:rgba(239,68,68,.1);color:#b91c1c}
   .mini-badge.good{background:rgba(34,197,94,.1);color:#15803d}
