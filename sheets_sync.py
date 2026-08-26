@@ -113,21 +113,35 @@ def export_credit_requests(solicitudes: list[dict]) -> dict:
                 str(s.get("created_at", "")),
             ])
 
-        # Limpiar y escribir
-        service.spreadsheets().values().clear(
-            spreadsheetId=SHEET_ID,
-            range="Solicitudes!A:Q"
-        ).execute()
+        # Agregar headers si la hoja está vacía
+        sheet_name = "Hoja 1"  # Usar la hoja existente
+        headers = ["ID", "Cédula", "Nombre", "Tipo", "Ejecutivo", "Estado",
+                   "Monto Solicitado", "Crédito Actual", "Cupo Inicial",
+                   "Promedio Compras", "Calificación", "Score", "Nivel Riesgo",
+                   "Aprobado Por", "Fecha Aprobación", "Observaciones", "Fecha Creación"]
 
+        # Verificar si la hoja tiene datos
+        try:
+            existing = service.spreadsheets().values().get(
+                spreadsheetId=SHEET_ID,
+                range=f'{sheet_name}!A1:A1'
+            ).execute()
+            if not existing.get("values"):
+                # Hoja vacía, agregar headers
+                rows.insert(0, headers)
+        except Exception:
+            rows.insert(0, headers)
+
+        # Escribir datos
         service.spreadsheets().values().update(
             spreadsheetId=SHEET_ID,
-            range="Solicitudes!A1",
+            range=f'{sheet_name}!A1',
             valueInputOption="RAW",
             body={"values": rows}
         ).execute()
 
-        log.info("Exportadas %d solicitudes a Google Sheets", len(rows))
-        return {"ok": True, "exported": len(rows)}
+        log.info("Exportadas %d solicitudes a Google Sheets", len(solicitudes))
+        return {"ok": True, "exported": len(solicitudes)}
 
     except Exception as e:
         log.error("Error exportando a Google Sheets: %s", e)
@@ -152,17 +166,35 @@ def export_approval_history(history: list[dict]) -> dict:
                 str(h.get("created_at", "")),
             ])
 
-        service.spreadsheets().values().clear(
-            spreadsheetId=SHEET_ID,
-            range="Aprobaciones!A:E"
-        ).execute()
+        # Usar la misma hoja "Hoja 1" pero en columnas diferentes
+        sheet_name = "Hoja 1"
+        headers = ["ID Solicitud", "Acción", "Ejecutivo", "Motivo", "Fecha"]
 
-        service.spreadsheets().values().update(
-            spreadsheetId=SHEET_ID,
-            range="Aprobaciones!A1",
-            valueInputOption="RAW",
-            body={"values": rows}
-        ).execute()
+        # Verificar si hay datos en las columnas Q:U (historial)
+        try:
+            existing = service.spreadsheets().values().get(
+                spreadsheetId=SHEET_ID,
+                range=f'{sheet_name}!Q1:Q1'
+            ).execute()
+            if not existing.get("values"):
+                # Agregar headers en columnas Q-U
+                service.spreadsheets().values().update(
+                    spreadsheetId=SHEET_ID,
+                    range=f'{sheet_name}!Q1',
+                    valueInputOption="RAW",
+                    body={"values": [headers]}
+                ).execute()
+        except Exception:
+            pass
+
+        # Escribir datos en columnas Q-U
+        if rows:
+            service.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID,
+                range=f'{sheet_name}!Q2',
+                valueInputOption="RAW",
+                body={"values": rows}
+            ).execute()
 
         log.info("Exportadas %d aprobaciones a Google Sheets", len(rows))
         return {"ok": True, "exported": len(rows)}

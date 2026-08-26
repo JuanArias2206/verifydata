@@ -2234,7 +2234,7 @@ def api_credit_warm_rsales():
 @app.route("/cartera")
 def cartera_page():
     """Dashboard de cartera para Jefe Cartera: solicitudes, historial, aprobaciones."""
-    from flask import jsonify
+    import json
     from db import credit_request_get_all
     solicitudes = credit_request_get_all()
     return render_template_string(CARTERA_TEMPLATE, solicitudes_json=json.dumps(solicitudes, ensure_ascii=False, default=str))
