@@ -123,7 +123,7 @@ def _require_authentication():
         from flask import jsonify
         return jsonify(ok=False, error="No autenticado"), 401
     from flask import redirect, url_for
-    return redirect(url_for("auth.login", next=request.path))
+    return redirect(url_for("login_page", next=request.path))
 
 
 @app.context_processor

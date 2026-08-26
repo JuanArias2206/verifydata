@@ -397,7 +397,7 @@ def _wants_json() -> bool:
 def _reject_unauthenticated():
     if _wants_json():
         return jsonify(ok=False, error="No autenticado"), 401
-    return redirect(url_for("auth.login", next=request.path))
+    return redirect(url_for("login_page", next=request.path))
 
 
 # ============================================================================
@@ -420,14 +420,16 @@ def sso_enabled() -> bool:
 # ============================================================================
 #  Rutas — Login (página + OTP + SSO)
 # ============================================================================
-@auth_bp.route("/login")
-def login():
-    if load_logged_in_user():
-        return redirect("/")
-    return render_template_string(
-        LOGIN_TEMPLATE, sso_enabled=sso_enabled(),
-        next=request.args.get("next", "/"),
-        error=request.args.get("error", ""))
+# NOTA: La ruta /login ahora está en app.py (login simple naprolab/naprolab)
+# Esta ruta OTP/SSO queda deshabilitada.
+# @auth_bp.route("/login")
+# def login():
+#     if load_logged_in_user():
+#         return redirect("/")
+#     return render_template_string(
+#         LOGIN_TEMPLATE, sso_enabled=sso_enabled(),
+#         next=request.args.get("next", "/"),
+#         error=request.args.get("error", ""))
 
 
 @auth_bp.route("/otp/request", methods=["POST"])
@@ -528,7 +530,7 @@ def otp_verify():
 @auth_bp.route("/microsoft")
 def microsoft_login():
     if not sso_enabled():
-        return redirect(url_for("auth.login", error="SSO no configurado"))
+        return redirect(url_for("login_page", error="SSO no configurado"))
     state = secrets.token_urlsafe(16)
     resp = make_response(redirect(_msal_app().get_authorization_request_url(
         AZURE_SCOPES, state=state, redirect_uri=AUTH_REDIRECT_URI)))
@@ -546,10 +548,10 @@ def microsoft_callback():
             error=request.args.get("error_description", "Error de Microsoft")))
     # Validar state anti-CSRF
     if request.args.get("state") != request.cookies.get("mt_oauth_state"):
-        return redirect(url_for("auth.login", error="Estado inválido (CSRF)."))
+        return redirect(url_for("login_page", error="Estado inválido (CSRF)."))
     code = request.args.get("code")
     if not code:
-        return redirect(url_for("auth.login", error="Sin código de Microsoft."))
+        return redirect(url_for("login_page", error="Sin código de Microsoft."))
 
     result = _msal_app().acquire_token_by_authorization_code(
         code, scopes=AZURE_SCOPES, redirect_uri=AUTH_REDIRECT_URI)
@@ -563,7 +565,7 @@ def microsoft_callback():
         claims.get("preferred_username") or claims.get("email") or "")
     oid = claims.get("oid")
     if not email:
-        return redirect(url_for("auth.login", error="Microsoft no devolvió email."))
+        return redirect(url_for("login_page", error="Microsoft no devolvió email."))
 
     user = None
     token = None
@@ -599,7 +601,7 @@ def logout():
     if token:
         with get_db() as conn:
             destroy_session(conn, token)
-    resp = make_response(redirect(url_for("auth.login")))
+    resp = make_response(redirect(url_for("login_page")))
     _clear_cookie(resp)
     return resp
 
