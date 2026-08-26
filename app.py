@@ -97,10 +97,9 @@ app.register_blueprint(_auth.auth_bp)
 def _require_authentication():
     """Autenticación simple: user=naprolab, pass=naprolab por env vars.
     LOGIN_DISABLED=1 desactiva auth completamente (demo)."""
-    # Si auth desactivada → usuario demo
-    if not os.environ.get("LOGIN_DISABLED"):
-        os.environ["LOGIN_DISABLED"] = "1"
-    if os.environ.get("LOGIN_DISABLED", "").lower() in ("1", "true", "yes", "si"):
+    # Verificar si auth está desactivada
+    login_disabled = os.environ.get("LOGIN_DISABLED", "").lower()
+    if login_disabled in ("1", "true", "yes", "si"):
         from flask import g
         g.user = {"email": "demo@verifydata.local",
                   "rol": "admin", "nombre": "Demo"}
