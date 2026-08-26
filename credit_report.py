@@ -147,13 +147,20 @@ def _make_table(data, col_widths, header_color='primary', style_overrides=None):
 
 def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     """Genera un PDF premium del perfil crediticio completo."""
-    if output_path is None:
-        output_path = str(ROOT / "data" / "credit_report.pdf")
+    import io
 
-    doc = SimpleDocTemplate(
-        output_path, pagesize=letter,
-        rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=60,
-    )
+    if output_path is None:
+        # Generar en memoria
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer, pagesize=letter,
+            rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=60,
+        )
+    else:
+        doc = SimpleDocTemplate(
+            output_path, pagesize=letter,
+            rightMargin=50, leftMargin=50, topMargin=60, bottomMargin=60,
+        )
 
     S = _make_styles()
     story = []
@@ -669,5 +676,10 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     # Construir PDF
     doc.build(story)
 
-    with open(output_path, 'rb') as f:
-        return f.read()
+    if output_path is None:
+        # Retornar desde memoria
+        buffer.seek(0)
+        return buffer.read()
+    else:
+        with open(output_path, 'rb') as f:
+            return f.read()

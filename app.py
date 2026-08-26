@@ -2774,34 +2774,30 @@ import secrets as _secrets
 
 def _store_credit_result(result: dict) -> str:
     token = _secrets.token_urlsafe(16)
-    # Guardar en memoria (para冷 start local)
     _CREDIT_RESULTS[token] = result
-    # Guardar en SQLite (para Vercel cold starts)
     try:
         from db import credit_result_save
         credit_result_save(token, result)
-    except Exception:
-        pass
-    # Limpiar memoria: max 100 resultados
+    except Exception as e:
+        log.warning("No se pudo guardar resultado en SQLite: %s", e)
     while len(_CREDIT_RESULTS) > 100:
         _CREDIT_RESULTS.pop(next(iter(_CREDIT_RESULTS)))
     return token
 
+
 def _get_credit_result(token: str) -> dict | None:
     """Busca resultado en memoria primero, luego en SQLite."""
-    # 1. Intentar en memoria
     result = _CREDIT_RESULTS.get(token)
     if result:
         return result
-    # 2. Intentar en SQLite (Vercel cold start)
     try:
         from db import credit_result_get
         result = credit_result_get(token)
         if result:
-            _CREDIT_RESULTS[token] = result  # Cache en memoria
+            _CREDIT_RESULTS[token] = result
             return result
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("No se pudo leer resultado de SQLite: %s", e)
     return None
 
 # ==============================================================
@@ -3220,23 +3216,23 @@ def api_credit_send_email():
 @app.route("/download/credit-pdf/<token>")
 def download_credit_pdf(token):
     """Genera y descarga el PDF del perfil crediticio."""
-    from flask import send_file
+    from flask import Response
     result = _get_credit_result(token)
     if not result:
         return "Resultado no encontrado", 404
 
     try:
         from credit_report import generate_credit_pdf
-        import tempfile
+        import io
 
-        pdf_path = f"/tmp/credit_{token}.pdf"
-        generate_credit_pdf(result, pdf_path)
+        # Generar PDF en memoria
+        pdf_bytes = generate_credit_pdf(result)
+        pdf_name = f"VerifyData_Credito_{result.get('nombre', 'cliente').replace(' ', '_')}.pdf"
 
-        return send_file(
-            pdf_path,
+        return Response(
+            pdf_bytes,
             mimetype="application/pdf",
-            as_attachment=True,
-            download_name=f"VerifyData_Credito_{result.get('nombre', 'cliente').replace(' ', '_')}.pdf"
+            headers={"Content-Disposition": f"attachment; filename={pdf_name}"}
         )
     except Exception as e:
         return f"Error generando PDF: {e}", 500
