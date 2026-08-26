@@ -28,7 +28,25 @@ CREDENTIALS_PATH = os.environ.get("GOOGLE_SHEETS_CREDENTIALS", "")
 
 def is_configured() -> bool:
     """Verifica si Google Sheets está configurado."""
-    return bool(SHEET_ID and CREDENTIALS_PATH and Path(CREDENTIALS_PATH).exists())
+    return bool(SHEET_ID and CREDENTIALS_PATH)
+
+
+def _get_credentials():
+    """Obtiene las credenciales desde env var (JSON string) o archivo."""
+    import tempfile
+    
+    # Si CREDENTIALS_PATH es un archivo que existe, usarlo
+    if Path(CREDENTIALS_PATH).exists():
+        return CREDENTIALS_PATH
+    
+    # Si no, asumir que es el JSON string directo
+    if CREDENTIALS_PATH.startswith("{"):
+        # Es un JSON string, escribirlo a un archivo temporal
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(CREDENTIALS_PATH)
+            return f.name
+    
+    return CREDENTIALS_PATH
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -77,8 +95,9 @@ def get_sheets_service():
         raise RuntimeError("Instala las dependencias: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
 
     scopes = ['https://www.googleapis.com/auth/spreadsheets']
+    creds_path = _get_credentials()
     credentials = service_account.Credentials.from_service_account_file(
-        CREDENTIALS_PATH, scopes=scopes)
+        creds_path, scopes=scopes)
     return build('sheets', 'v4', credentials=credentials)
 
 
