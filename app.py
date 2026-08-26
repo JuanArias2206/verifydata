@@ -3169,8 +3169,7 @@ def api_credit_send_email():
         # Adjuntar PDF
         try:
             from credit_report import generate_credit_pdf
-            pdf_path = f"/tmp/credit_{token}.pdf"
-            pdf_bytes = generate_credit_pdf(result, pdf_path)
+            pdf_bytes = generate_credit_pdf(result)  # genera en memoria
             from email.mime.base import MIMEBase
             from email import encoders
             pdf_attachment = MIMEBase("application", "pdf")
@@ -3216,24 +3215,35 @@ def api_credit_send_email():
 def download_credit_pdf(token):
     """Genera y descarga el PDF del perfil crediticio."""
     from flask import Response
+    import io
+
     result = _get_credit_result(token)
     if not result:
         return "Resultado no encontrado", 404
 
     try:
         from credit_report import generate_credit_pdf
-        import io
 
         # Generar PDF en memoria
         pdf_bytes = generate_credit_pdf(result)
+
+        # Verificar que es un PDF válido
+        if not pdf_bytes or len(pdf_bytes) < 100:
+            return "PDF generado vacio", 500
+
         pdf_name = f"VerifyData_Credito_{result.get('nombre', 'cliente').replace(' ', '_')}.pdf"
 
         return Response(
             pdf_bytes,
             mimetype="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={pdf_name}"}
+            headers={
+                "Content-Disposition": f'attachment; filename="{pdf_name}"',
+                "Content-Length": str(len(pdf_bytes)),
+                "Cache-Control": "no-cache",
+            }
         )
     except Exception as e:
+        log.exception("Error generando PDF para token %s", token)
         return f"Error generando PDF: {e}", 500
 
 
@@ -3480,7 +3490,7 @@ function enviarCorreo(){
   }).then(function(r){return r.json();}).then(function(d){
     btn.disabled=false;
     if(d.ok){
-      btn.innerHTML='&#10003; Enviado a '+d.to;
+      btn.innerHTML='&#10003; Enviado a '+(Array.isArray(d.to)?d.to.join(', '):d.to);
       btn.style.background='#15803d';
       btn.style.color='#fff';
       btn.style.borderColor='#15803d';

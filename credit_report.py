@@ -229,7 +229,7 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
         ['CC/NIT:', result.get('cedula_nit', '')],
         ['Fecha de solicitud:', result.get('fecha_solicitud', 'N/A')],
         ['Tipo de solicitud:', result.get('tipo_solicitud', 'N/A')],
-        ['Ingreso mensual:', f'${result.get("ingreso_mensual", 0):,.0f}'],
+        ['Ingreso mensual:', f'${(result.get("ingreso_mensual") or 0):,.0f}'],
         ['Fuente de ingreso:', result.get('fuente_ingreso', 'N/A')],
     ]
     client_table = _make_table(client_data, [2.2*inch, 4.3*inch], 'gray_dark')
@@ -277,8 +277,8 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
         ['Score Crediticio', f'{score} / 1000', f'Nivel: {nivel}'],
         ['Decisión', badge_text, p.get('recomendacion', '')],
         ['Monto Máximo', f'${monto:,.0f}', 'Ver justificación abajo'],
-        ['Tasa de endeudamiento', f'{(result.get("endeudamiento",0)/max(result.get("ingreso_mensual",1),1)*100):.1f}%', ' Endeudamiento / Ingreso mensual'],
-        ['Capacidad de pago', f'{(result.get("ingreso_mensual",0)*0.3):,.0f}', '30% del ingreso mensual'],
+        ['Tasa de endeudamiento', f'{((result.get("endeudamiento") or 0)/max((result.get("ingreso_mensual") or 1),1)*100):.1f}%', ' Endeudamiento / Ingreso mensual'],
+        ['Capacidad de pago', f'{((result.get("ingreso_mensual") or 0)*0.3):,.0f}', '30% del ingreso mensual'],
     ]
     story.append(_make_table(decision_data, [2*inch, 1.5*inch, 3*inch], 'gray_dark'))
     story.append(Spacer(1, 16))
@@ -289,7 +289,7 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
         story.append(Paragraph('JUSTIFICACIÓN DEL MONTO MÁXIMO', S['subsection']))
 
         # Desglose visual
-        ventas = result.get('promedio_compras', 0) * result.get('numero_compras', 0)
+        ventas = (result.get('promedio_compras') or 0) * (result.get('numero_compras') or 0)
         capacidad = ventas * 0.30
         mult = {'BAJO': 1.0, 'MEDIO': 0.6, 'ALTO': 0.3, 'CRITICO': 0}.get(nivel, 0)
 
@@ -331,24 +331,24 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     story.append(Paragraph('Ingresos y Capacidad de Pago', S['subsection']))
     ing_data = [
         ['CONCEPTO', 'VALOR', 'OBSERVACIÓN'],
-        ['Ingreso mensual', f'${result.get("ingreso_mensual", 0):,.0f}', result.get('fuente_ingreso', '')],
-        ['Ingreso anual estimado', f'${result.get("ingreso_mensual", 0)*12:,.0f}', 'Ingreso × 12'],
-        ['Capacidad de pago (30%)', f'${result.get("ingreso_mensual", 0)*0.3:,.0f}', 'Máximo recomendado'],
-        ['Endeudamiento total', f'${result.get("endeudamiento", 0):,.0f}', ''],
-        ['Patrimonio estimado', f'${result.get("patrimonio", 0):,.0f}', ''],
+        ['Ingreso mensual', f'${(result.get("ingreso_mensual") or 0):,.0f}', result.get('fuente_ingreso', '')],
+        ['Ingreso anual estimado', f'${(result.get("ingreso_mensual") or 0)*12:,.0f}', 'Ingreso × 12'],
+        ['Capacidad de pago (30%)', f'${(result.get("ingreso_mensual") or 0)*0.3:,.0f}', 'Máximo recomendado'],
+        ['Endeudamiento total', f'${(result.get("endeudamiento") or 0):,.0f}', ''],
+        ['Patrimonio estimado', f'${(result.get("patrimonio") or 0):,.0f}', ''],
     ]
     story.append(_make_table(ing_data, [2.2*inch, 2*inch, 2.3*inch], 'primary'))
     story.append(Spacer(1, 12))
 
     # Ratios financieros
     story.append(Paragraph('Ratios Financieros', S['subsection']))
-    ing_mensual = max(result.get('ingreso_mensual', 1), 1)
-    endeudamiento = result.get('endeudamiento', 0)
-    patrimonio = result.get('patrimonio', 1)
+    ing_mensual = max((result.get('ingreso_mensual') or 1), 1)
+    endeudamiento = result.get('endeudamiento') or 0
+    patrimonio = result.get('patrimonio') or 1
 
     ratio_endeud = (endeudamiento / ing_mensual) if ing_mensual > 0 else 0
-    ratio_compras = (result.get('promedio_compras', 0) / max(result.get('credito_actual', 1), 1))
-    ratio_capacidad = (result.get('ingreso_mensual', 0) * 0.3 / max(result.get('credito_actual', 1), 1))
+    ratio_compras = ((result.get('promedio_compras') or 0) / max((result.get('credito_actual') or 1), 1))
+    ratio_capacidad = ((result.get('ingreso_mensual') or 0) * 0.3 / max((result.get('credito_actual') or 1), 1))
 
     ratio_data = [
         ['RATIO', 'VALOR', 'REFERENCIA', 'ESTADO'],
@@ -364,15 +364,15 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     story.append(Paragraph('Historial de Compras', S['subsection']))
     compra_data = [
         ['CONCEPTO', 'VALOR'],
-        ['Promedio compras', f'${result.get("promedio_compras", 0):,.0f}'],
-        ['Compra mínima', f'${result.get("compra_minima", 0):,.0f}'],
-        ['Compra máxima', f'${result.get("compra_maxima", 0):,.0f}'],
-        ['Número de compras', str(result.get('numero_compras', 0))],
-        ['Año del dato', str(result.get('ano_dato_compras', 2026))],
-        ['Promedio pago (días)', f'{result.get("promedio_pago_dias", 0)} días'],
-        ['Crédito actual', f'${result.get("credito_actual", 0):,.0f}'],
-        ['Monto solicitado', f'${result.get("monto_solicitar", 0):,.0f}'],
-        ['Cupo inicial', f'${result.get("cupo_inicial", 0):,.0f}'],
+        ['Promedio compras', f'${(result.get("promedio_compras") or 0):,.0f}'],
+        ['Compra mínima', f'${(result.get("compra_minima") or 0):,.0f}'],
+        ['Compra máxima', f'${(result.get("compra_maxima") or 0):,.0f}'],
+        ['Número de compras', str(result.get('numero_compras') or 0)],
+        ['Año del dato', str(result.get('ano_dato_compras') or 2026)],
+        ['Promedio pago (días)', f'{(result.get("promedio_pago_dias") or 0)} días'],
+        ['Crédito actual', f'${(result.get("credito_actual") or 0):,.0f}'],
+        ['Monto solicitado', f'${(result.get("monto_solicitar") or 0):,.0f}'],
+        ['Cupo inicial', f'${(result.get("cupo_inicial") or 0):,.0f}'],
     ]
     story.append(_make_table(compra_data, [3*inch, 3.5*inch], 'success'))
 
