@@ -95,11 +95,9 @@ app.register_blueprint(_auth.auth_bp)
 
 @app.before_request
 def _require_authentication():
-    """Exige sesión para toda la UI HTML y los endpoints AJAX (/api/…),
-    excepto rutas públicas (login, callback SSO, /api/v1, estáticos).
-    Por defecto en la demo, la autenticación está desactivada
-    (LOGIN_DISABLED=1). Para entornos reales, define LOGIN_DISABLED=0 y
-    configura SMTP/Microsoft SSO."""
+    """Autenticación simple: user=naprolab, pass=naprolab por env vars.
+    LOGIN_DISABLED=1 desactiva auth completamente (demo)."""
+    # Si auth desactivada → usuario demo
     if not os.environ.get("LOGIN_DISABLED"):
         os.environ["LOGIN_DISABLED"] = "1"
     if os.environ.get("LOGIN_DISABLED", "").lower() in ("1", "true", "yes", "si"):
@@ -107,15 +105,25 @@ def _require_authentication():
         g.user = {"email": "demo@verifydata.local",
                   "rol": "admin", "nombre": "Demo"}
         return
-    _auth.load_logged_in_user()  # fija g.user (dict | None)
+
+    # Auth simple por sesiones
+    from flask import session
+    _auth_user = session.get("verifydata_user")
+    if _auth_user:
+        from flask import g
+        g.user = _auth_user
+        return
+
+    # Rutas públicas (login, estáticos, API v1)
     if _auth.is_public_path(request.path):
         return
-    if g.user is None:
-        if request.path.startswith("/api/"):
-            from flask import jsonify
-            return jsonify(ok=False, error="No autenticado"), 401
-        from flask import redirect, url_for
-        return redirect(url_for("auth.login", next=request.path))
+
+    # No autenticado → login
+    if request.path.startswith("/api/"):
+        from flask import jsonify
+        return jsonify(ok=False, error="No autenticado"), 401
+    from flask import redirect, url_for
+    return redirect(url_for("auth.login", next=request.path))
 
 
 @app.context_processor
@@ -128,6 +136,67 @@ def _audit_user() -> str:
     """Email del usuario en sesión (para auditoría), o 'anon' si no hay."""
     u = g.get("user")
     return (u or {}).get("email", "anon") if isinstance(u, dict) else "anon"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  LOGIN SIMPLE — user/pass por env vars
+# ═══════════════════════════════════════════════════════════════════
+LOGIN_TEMPLATE = ui_theme.head_open("VerifyData — Iniciar Sesión") + """
+<div style="max-width:400px;margin:120px auto;padding:32px;background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.08)">
+  <div style="text-align:center;margin-bottom:24px">
+    <div style="font-size:24px;font-weight:800;color:var(--violet)">Verify<span style="color:var(--blue)">Data</span></div>
+    <p style="color:var(--text-faint);margin:8px 0 0;font-size:13px">Iniciar sesión para continuar</p>
+  </div>
+  <form method="POST" action="/login" style="display:flex;flex-direction:column;gap:12px">
+    <div>
+      <label style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Usuario</label>
+      <input name="username" type="text" placeholder="Usuario" required style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
+    </div>
+    <div>
+      <label style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Contraseña</label>
+      <input name="password" type="password" placeholder="Contraseña" required style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
+    </div>
+    <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;margin-top:8px">Iniciar Sesión</button>
+    {% if error %}<p style="color:#dc2626;font-size:13px;text-align:center;margin-top:4px">{{ error }}</p>{% endif %}
+  </form>
+</div>
+""" + ui_theme.SHELL_CLOSE
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    """Login simple: user=naprolab, pass=naprolab por env vars."""
+    from flask import request, session, redirect, url_for, render_template_string
+
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        next_url = request.args.get("next", "/")
+
+        expected_user = os.environ.get("VERIFYDATA_USER", "naprolab")
+        expected_pass = os.environ.get("VERIFYDATA_PASS", "naprolab")
+
+        if username == expected_user and password == expected_pass:
+            from flask import g
+            session["verifydata_user"] = {
+                "email": f"{username}@verifydata.local",
+                "rol": "admin",
+                "nombre": username,
+            }
+            g.user = session["verifydata_user"]
+            return redirect(next_url)
+        else:
+            return render_template_string(LOGIN_TEMPLATE, error="Credenciales incorrectas")
+
+    return render_template_string(LOGIN_TEMPLATE, error=None)
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout_page():
+    """Cierra sesión."""
+    from flask import session, redirect, url_for
+    session.clear()
+    return redirect(url_for("login_page"))
 
 
 # Content-Security-Policy. Nota: la UI y Swagger usan mucho CSS/JS inline
@@ -2157,6 +2226,161 @@ def api_credit_warm_rsales():
         return {"ok": True, "cached": len(idx)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  DASHBOARD JEFE CARTERA — Historial y Aprobaciones
+# ═══════════════════════════════════════════════════════════════════
+@app.route("/cartera")
+def cartera_page():
+    """Dashboard de cartera para Jefe Cartera: solicitudes, historial, aprobaciones."""
+    from flask import jsonify
+    from db import credit_request_get_all
+    solicitudes = credit_request_get_all()
+    return render_template_string(CARTERA_TEMPLATE, solicitudes_json=json.dumps(solicitudes, ensure_ascii=False, default=str))
+
+
+CARTERA_TEMPLATE = ui_theme.head_open("VerifyData — Cartera") + \
+    ui_theme.shell_open("cartera", "Cartera", "Gestión de solicitudes") + """
+<style>{% raw %}
+  .car-table{width:100%;border-collapse:collapse;font-size:13px}
+  .car-table th{background:#2d3748;color:#fff;padding:10px 12px;text-align:left;font-weight:600}
+  .car-table td{padding:10px 12px;border-bottom:1px solid var(--line)}
+  .car-table tr:hover{background:rgba(105,65,244,.04)}
+  .pill{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600}
+  .pill-pendiente{background:#fef3c7;color:#92400e}
+  .pill-aprobado{background:#d1fae5;color:#065f46}
+  .pill-rechazado{background:#fee2e2;color:#991b1b}
+  .btn-sm{padding:6px 14px;font-size:12px;border-radius:6px;border:none;cursor:pointer;font-weight:600}
+  .btn-aprobar{background:#15803d;color:#fff}
+  .btn-rechazar{background:#dc2626;color:#fff}
+  .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:center;justify-content:center}
+  .modal{background:#fff;border-radius:12px;padding:24px;max-width:400px;width:90%}
+{% endraw %}</style>
+<div class="main-content">
+  <div class="hero-row" style="margin-bottom:16px">
+    <div class="menu-hero">
+      <p class="eyebrow">Gestión de cartera</p>
+      <h2>Solicitudes de crédito</h2>
+      <p>Revisa, aprueba o rechaza solicitudes de clientes.</p>
+    </div>
+  </div>
+
+  <div class="card pad">
+    <table class="car-table">
+      <thead>
+        <tr>
+          <th>ID</th><th>Cliente</th><th>CC</th><th>Tipo</th>
+          <th>Monto</th><th>Score</th><th>Estado</th><th>Fecha</th><th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody id="car-body"></tbody>
+    </table>
+  </div>
+</div>
+<script>
+var SOLICITUDES = {{ solicitudes_json|safe }};
+function escH(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function renderCartera(){
+  var html='';
+  if(!SOLICITUDES.length){html='<tr><td colspan="9" style="text-align:center;padding:20px;color:#999">No hay solicitudes</td></tr>';}
+  SOLICITUDES.forEach(function(s){
+    var pillClass='pill-pendiente';
+    if(s.estado==='aprobado')pillClass='pill-aprobado';
+    if(s.estado==='rechazado')pillClass='pill-rechazado';
+    var accionBtns='';
+    if(s.estado==='pendiente'){
+      accionBtns='<button class="btn-sm btn-aprobar" onclick="aprobar('+s.id+')">Aprobar</button> '+
+                 '<button class="btn-sm btn-rechazar" onclick="rechazar('+s.id+')">Rechazar</button>';
+    }
+    html+='<tr>'+
+      '<td>'+s.id+'</td>'+
+      '<td>'+escH(s.nombre)+'</td>'+
+      '<td>'+escH(s.cedula)+'</td>'+
+      '<td>'+escH(s.tipo_solicitud)+'</td>'+
+      '<td>$'+Number(s.monto_solicitado||0).toLocaleString('es-CO')+'</td>'+
+      '<td>'+s.score+'</td>'+
+      '<td><span class="pill '+pillClass+'">'+escH(s.estado)+'</span></td>'+
+      '<td>'+(s.created_at||'').slice(0,10)+'</td>'+
+      '<td>'+accionBtns+'</td>'+
+    '</tr>';
+  });
+  document.getElementById('car-body').innerHTML=html;
+}
+function aprobar(id){
+  if(!confirm('¿Aprobar solicitud #'+id+'?'))return;
+  fetch('/api/credit/approve',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}'})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){location.reload();}else{alert(d.error);}
+  });
+}
+function rechazar(id){
+  var motivo=prompt('Motivo del rechazo:');
+  if(motivo===null)return;
+  fetch('/api/credit/reject',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}',motivo:motivo})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){location.reload();}else{alert(d.error);}
+  });
+}
+renderCartera();
+</script>
+""" + ui_theme.SHELL_CLOSE
+
+
+@app.route("/api/credit/approve", methods=["POST"])
+def api_credit_approve():
+    """Aprueba una solicitud de crédito."""
+    from flask import jsonify, request, g
+    data = request.get_json(silent=True) or {}
+    request_id = data.get("id")
+    ejecutivo = data.get("ejecutivo", "")
+    if not request_id:
+        return jsonify({"ok": False, "error": "ID requerido"}), 400
+    try:
+        from db import credit_request_approve
+        credit_request_approve(int(request_id), ejecutivo)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/reject", methods=["POST"])
+def api_credit_reject():
+    """Rechaza una solicitud de crédito."""
+    from flask import jsonify, request
+    data = request.get_json(silent=True) or {}
+    request_id = data.get("id")
+    ejecutivo = data.get("ejecutivo", "")
+    motivo = data.get("motivo", "Sin motivo")
+    if not request_id:
+        return jsonify({"ok": False, "error": "ID requerido"}), 400
+    try:
+        from db import credit_request_reject
+        credit_request_reject(int(request_id), ejecutivo, motivo)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/history/<int:request_id>")
+def api_credit_history(request_id):
+    """Historial de aprobaciones de una solicitud."""
+    from flask import jsonify
+    from db import approval_history_get
+    history = approval_history_get(request_id)
+    return jsonify({"ok": True, "history": history})
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  GOOGLE SHEETS SYNC
+# ═══════════════════════════════════════════════════════════════════
+try:
+    from sheets_sync import register_sheets_routes
+    register_sheets_routes(app)
+except Exception:
+    pass  # Google Sheets no configurado
 
 
 @app.route("/api/credit/evaluate", methods=["POST"])

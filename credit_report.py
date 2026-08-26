@@ -499,22 +499,45 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     # Documentos
     docs = p.get('docs', {})
     doc_labels = {
-        'cedula_frontal': 'Cédula Frontal',
-        'cedula_posterior': 'Cédula Posterior',
-        'rut': 'RUT',
-        'camara_comercio': 'Cámara de Comercio',
-        'estados_financieros': 'Estados Financieros',
-        'declaracion_renta': 'Declaración de Renta'
+        'cedula_frontal': ('Cédula de Ciudadanía — Frontal', 'Documento de identidad principal del cliente'),
+        'cedula_posterior': ('Cédula de Ciudadanía — Posterior', 'Respaldo de documento de identidad'),
+        'rut': ('Registro Único Tributario (RUT)', 'Identificación tributaria ante DIAN'),
+        'camara_comercio': ('Cámara de Comercio', 'Certificado de existencia y representación legal'),
+        'estados_financieros': ('Estados Financieros', 'Balance general y estado de resultados'),
+        'declaracion_renta': ('Declaración de Renta', 'Declaración del impuesto sobre la renta'),
     }
-    docs_count = sum(1 for v in docs.values() if v)
+    docs_count = sum(1 for dk, _ in doc_labels.items() if docs.get(dk))
 
-    story.append(Paragraph(f'Documentación Adjunta ({docs_count}/{len(doc_labels)})', S['subsection']))
-    doc_data = [['DOCUMENTO', 'ESTADO']]
-    for dk, dl in doc_labels.items():
+    story.append(Paragraph(f'Checklist de Documentación ({docs_count}/{len(doc_labels)} adjuntos)', S['subsection']))
+
+    # Tabla detallada de documentos
+    doc_data = [['DOCUMENTO', 'DESCRIPCIÓN', 'ESTADO']]
+    for dk, (dl, desc) in doc_labels.items():
         ok = docs.get(dk, False)
-        doc_data.append([dl, '✓ Adjuntado' if ok else '✗ No adjuntado'])
+        icon = '✓ ADJUNTADO' if ok else '✗ PENDIENTE'
+        doc_data.append([dl, desc, icon])
 
-    story.append(_make_table(doc_data, [3*inch, 3.5*inch], 'success'))
+    doc_table = _make_table(doc_data, [2.2*inch, 2.8*inch, 1.5*inch], 'success')
+    # Colorear filas pendientes
+    for i, (dk, _) in enumerate(doc_labels.items()):
+        if not docs.get(dk):
+            row_idx = i + 1  # +1 for header
+            doc_table.setStyle(TableStyle([
+                ('TEXTCOLOR', (2, row_idx), (2, row_idx), _hex('danger')),
+                ('FONTNAME', (2, row_idx), (2, row_idx), 'Helvetica-Bold'),
+            ]))
+    story.append(doc_table)
+    story.append(Spacer(1, 8))
+
+    # Nota sobre documentos
+    if docs_count < len(doc_labels):
+        missing = [dl for dk, (dl, _) in doc_labels.items() if not docs.get(dk)]
+        story.append(Paragraph(
+            f'<font color="{COLORS["warning"]}"><b>Documentos pendientes:</b> '
+            f'{", ".join(missing)}. La documentación completa mejora el score '
+            f'crediticio y facilita la aprobación.</font>',
+            S['small']
+        ))
     story.append(Spacer(1, 16))
 
     # Factores

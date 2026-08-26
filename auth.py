@@ -343,16 +343,21 @@ def load_logged_in_user() -> Optional[dict]:
 
 def is_public_path(path: str) -> bool:
     """Rutas que NO requieren sesión de UI:
+      • /login, /logout
       • /auth/*         (login, callback, logout)
       • /api/v1*        (API REST con su propia auth por API-key)
+      • /api/credit/warm-rsales (pre-calentamiento)
       • estáticos de Flask
       • /health (si existiera)
     """
-    return (path.startswith("/auth/")
+    return (path.startswith("/login")
+            or path.startswith("/logout")
+            or path.startswith("/auth/")
             or path.startswith("/api/v1")
             or path.startswith("/static/")
             or path == "/health"
-            or path == "/favicon.ico")
+            or path == "/favicon.ico"
+            or path == "/api/credit/warm-rsales")
 
 
 def require_login(view):

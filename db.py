@@ -348,6 +348,38 @@ def _schema_statements(pg: bool) -> list[str]:
             result      {jsont} NOT NULL,
             created_at  {ts} NOT NULL DEFAULT ({now})
         )""",
+        # --- credit_requests: solicitudes de crédito (portfolio) ---
+        f"""CREATE TABLE IF NOT EXISTS credit_requests (
+            id              {autoinc},
+            cedula          TEXT NOT NULL,
+            nombre          TEXT NOT NULL,
+            tipo_solicitud  TEXT NOT NULL DEFAULT 'SOLICITUD DE CREDITO',
+            ejecutivo       TEXT NOT NULL DEFAULT '',
+            estado          TEXT NOT NULL DEFAULT 'pendiente',
+            monto_solicitado REAL NOT NULL DEFAULT 0,
+            credito_actual  REAL NOT NULL DEFAULT 0,
+            cupo_inicial    REAL NOT NULL DEFAULT 0,
+            promedio_compras REAL NOT NULL DEFAULT 0,
+            calificacion    REAL NOT NULL DEFAULT 0,
+            presenta_mora   {boolt} NOT NULL DEFAULT {false_},
+            cartera_castigada {boolt} NOT NULL DEFAULT {false_},
+            score           INTEGER NOT NULL DEFAULT 0,
+            nivel_riesgo    TEXT NOT NULL DEFAULT 'NO_EVALUADO',
+            observaciones   TEXT,
+            aprobado_por    TEXT,
+            fecha_aprobacion {ts},
+            motivo_rechazo  TEXT,
+            created_at      {ts} NOT NULL DEFAULT ({now})
+        )""",
+        # --- approval_history: historial de aprobaciones/rechazos ---
+        f"""CREATE TABLE IF NOT EXISTS approval_history (
+            id              {autoinc},
+            request_id      INTEGER NOT NULL,
+            accion          TEXT NOT NULL,
+            ejecutivo       TEXT NOT NULL DEFAULT '',
+            motivo          TEXT,
+            created_at      {ts} NOT NULL DEFAULT ({now})
+        )""",
     ]
     return stmts
 
@@ -694,6 +726,88 @@ def credit_result_get(token: str) -> dict | None:
         if isinstance(result, str):
             result = json.loads(result)
         return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Credit Requests (Portfolio)
+# ═══════════════════════════════════════════════════════════════════
+def credit_request_save(cedula: str, nombre: str, tipo_solicitud: str,
+                        ejecutivo: str, monto_solicitado: float,
+                        credito_actual: float, cupo_inicial: float,
+                        promedio_compras: float, calificacion: float,
+                        presenta_mora: bool, cartera_castigada: bool,
+                        score: int, nivel_riesgo: str,
+                        observaciones: str = "") -> int:
+    """Guarda una solicitud de crédito. Devuelve el ID."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO credit_requests
+               (cedula,nombre,tipo_solicitud,ejecutivo,monto_solicitado,
+                credito_actual,cupo_inicial,promedio_compras,calificacion,
+                presenta_mora,cartera_castigada,score,nivel_riesgo,observaciones)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (cedula, nombre, tipo_solicitud, ejecutivo, monto_solicitado,
+             credito_actual, cupo_inicial, promedio_compras, calificacion,
+             1 if presenta_mora else 0, 1 if cartera_castigada else 0,
+             score, nivel_riesgo, observaciones))
+        conn.commit()
+        return cur.lastrowid
+
+
+def credit_request_approve(request_id: int, ejecutivo: str, motivo: str = "") -> None:
+    """Aprueba una solicitud de crédito."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE credit_requests SET estado='aprobado',
+               aprobado_por=?, fecha_aprobacion=datetime('now')
+               WHERE id=?""", (ejecutivo, request_id))
+        conn.execute(
+            """INSERT INTO approval_history (request_id, accion, ejecutivo, motivo)
+               VALUES (?,'aprobacion',?,?)""", (request_id, ejecutivo, motivo))
+        conn.commit()
+
+
+def credit_request_reject(request_id: int, ejecutivo: str, motivo: str) -> None:
+    """Rechaza una solicitud de crédito."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE credit_requests SET estado='rechazado',
+               aprobado_por=?, motivo_rechazo=?, fecha_aprobacion=datetime('now')
+               WHERE id=?""", (ejecutivo, motivo, request_id))
+        conn.execute(
+            """INSERT INTO approval_history (request_id, accion, ejecutivo, motivo)
+               VALUES (?,'rechazo',?,?)""", (request_id, ejecutivo, motivo))
+        conn.commit()
+
+
+def credit_request_get_all(estado: str = None) -> list[dict]:
+    """Lista todas las solicitudes de crédito."""
+    with get_db() as conn:
+        if estado:
+            rows = conn.execute(
+                "SELECT * FROM credit_requests WHERE estado=? ORDER BY created_at DESC",
+                (estado,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM credit_requests ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def credit_request_get(request_id: int) -> dict | None:
+    """Obtiene una solicitud de crédito por ID."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM credit_requests WHERE id=?", (request_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def approval_history_get(request_id: int) -> list[dict]:
+    """Historial de aprobaciones de una solicitud."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM approval_history WHERE request_id=? ORDER BY created_at DESC",
+            (request_id,)).fetchall()
+        return [dict(r) for r in rows]
 
 
 if __name__ == "__main__":
