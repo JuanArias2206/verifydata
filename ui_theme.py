@@ -342,7 +342,13 @@ def sidebar(active: str = "") -> str:
         '    <p class="nav-label">Riesgo</p>\n'
         + _nav_item(active, "credito", "/credito", "credit", "Perfil crediticio") + "\n"
         '  </div>\n'
-        '  {% if current_user and current_user.rol == "admin" %}\n'
+        '  {% if current_user and current_user.rol in ["admin", "jefe_cartera", "ejecutivo"] %}\n'
+        '  <div class="nav-group">\n'
+        '    <p class="nav-label">Gestión</p>\n'
+        + _nav_item(active, "cartera", "/cartera", "credit", "Cartera — Aprobaciones") + "\n"
+        '  </div>\n'
+        '  {% endif %}\n'
+        '  {% if current_user and current_user.rol in ["admin", "jefe_cartera"] %}\n'
         '  <div class="nav-group">\n'
         '    <p class="nav-label">Sistema</p>\n'
         + _nav_item(active, "usuarios", "/auth/admin/users", "users", "Usuarios y roles") + "\n"

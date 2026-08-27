@@ -22,7 +22,6 @@
   "env": {
     "VERIFYDATA_DB_PATH": "/tmp/verifydata.db",
     "VERIFYDATA_ENV": "production",
-    "LOGIN_DISABLED": "1",
     "PYTHONUNBUFFERED": "1"
   }
 }

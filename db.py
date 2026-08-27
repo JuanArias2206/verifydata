@@ -780,6 +780,43 @@ def credit_request_reject(request_id: int, ejecutivo: str, motivo: str) -> None:
         conn.commit()
 
 
+def credit_request_revert(request_id: int, ejecutivo: str, motivo: str = "") -> None:
+    """Revierte una solicitud a pendiente (quita aprobación/rechazo). Para Jefe Cartera."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE credit_requests SET estado='pendiente',
+               aprobado_por=NULL, motivo_rechazo=NULL, fecha_aprobacion=NULL
+               WHERE id=?""", (request_id,))
+        conn.execute(
+            """INSERT INTO approval_history (request_id, accion, ejecutivo, motivo)
+               VALUES (?,'reversion',?,?)""", (request_id, ejecutivo, motivo or "Revertido a pendiente"))
+        conn.commit()
+
+
+def credit_request_toggle(request_id: int, ejecutivo: str, nuevo_estado: str, motivo: str = "") -> None:
+    """Cambia estado a aprobado/rechazado/pendiente genérico. Jefe Cartera."""
+    if nuevo_estado not in ("pendiente", "aprobado", "rechazado"):
+        raise ValueError(f"Estado inválido: {nuevo_estado}")
+    with get_db() as conn:
+        if nuevo_estado == "pendiente":
+            conn.execute(
+                """UPDATE credit_requests SET estado='pendiente',
+                   aprobado_por=NULL, motivo_rechazo=NULL, fecha_aprobacion=NULL WHERE id=?""",
+                (request_id,))
+        elif nuevo_estado == "aprobado":
+            conn.execute(
+                """UPDATE credit_requests SET estado='aprobado', aprobado_por=?, fecha_aprobacion=datetime('now'), motivo_rechazo=NULL WHERE id=?""",
+                (ejecutivo, request_id))
+        else:  # rechazado
+            conn.execute(
+                """UPDATE credit_requests SET estado='rechazado', aprobado_por=?, motivo_rechazo=?, fecha_aprobacion=datetime('now') WHERE id=?""",
+                (ejecutivo, motivo, request_id))
+        conn.execute(
+            """INSERT INTO approval_history (request_id, accion, ejecutivo, motivo)
+               VALUES (?,?,?,?)""", (request_id, f"cambio_a_{nuevo_estado}", ejecutivo, motivo))
+        conn.commit()
+
+
 def credit_request_get_all(estado: str = None) -> list[dict]:
     """Lista todas las solicitudes de crédito."""
     with get_db() as conn:

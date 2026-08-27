@@ -18,8 +18,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # ── Vercel-specific env overrides ──────────────────────────────────
-os.environ["VERIFYDATA_ENV"] = "production"
-os.environ["LOGIN_DISABLED"] = "1"
+# VERIFYDATA_ENV=production enables /tmp handling. LOGIN_DISABLED is NOT forced
+# here — it respects the value set in Vercel dashboard. Empty/default = auth ON.
+if not os.environ.get("VERIFYDATA_ENV"):
+    os.environ["VERIFYDATA_ENV"] = "production"
 os.environ["HOST"] = "0.0.0.0"
 os.environ["PORT"] = "8080"
 

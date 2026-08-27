@@ -545,6 +545,105 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
             f'crediticio y facilita la aprobación.</font>',
             S['small']
         ))
+    story.append(Spacer(1, 12))
+
+    # ── Anexos reales (archivos subidos) — incrustar imágenes / listar PDFs ──
+    anexos = result.get("anexos", []) or []
+    if anexos:
+        story.append(Paragraph(f'ANEXOS ADJUNTOS ({len(anexos)} archivo(s) cargado(s))', S['subsection']))
+        for a in anexos:
+            fname = a.get("original_name") or a.get("saved_name") or "archivo"
+            rel = a.get("relative_path") or ""
+            fpath = None
+            try:
+                if rel:
+                    cand = DATA_DIR / rel
+                    if cand.exists():
+                        fpath = cand
+                    else:
+                        cand2 = Path(a.get("saved_path", ""))
+                        if cand2.exists():
+                            fpath = cand2
+                else:
+                    cand2 = Path(a.get("saved_path", ""))
+                    if cand2.exists():
+                        fpath = cand2
+            except Exception:
+                fpath = None
+            ext = Path(fname).suffix.lower()
+            is_image = ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+            # Fila info
+            story.append(Paragraph(
+                f'<b>{fname}</b> &nbsp;<font color="{COLORS["gray"]}">({int(a.get("size",0))/1024:.1f} KB'
+                f'{" — "+a.get("mimetype","") if a.get("mimetype") else ""})</font>',
+                S['small']))
+            if is_image:
+                # Intentar fuente física primero, luego b64 (persistencia Vercel)
+                img_source = None
+                tmp_to_clean = None
+                if fpath and fpath.exists():
+                    img_source = str(fpath)
+                elif a.get("b64"):
+                    try:
+                        import base64 as _b64
+                        import tempfile as _tf
+                        raw = _b64.b64decode(a["b64"])
+                        suffix = ext or ".jpg"
+                        tf = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
+                        tf.write(raw)
+                        tf.close()
+                        img_source = tf.name
+                        tmp_to_clean = tf.name
+                    except Exception as e:
+                        story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo decodificar imagen b64: {e}</font>', S['small']))
+                        story.append(Spacer(1, 6))
+                        img_source = None
+                if img_source:
+                    try:
+                        # Escalar imagen para que quepa en página sin desbordar
+                        img = Image(img_source)
+                        max_w = 5.5 * inch
+                        max_h = 3.2 * inch
+                        iw, ih = img.imageWidth, img.imageHeight
+                        scale = min(max_w / iw if iw else 1, max_h / ih if ih else 1, 1)
+                        img.drawWidth = iw * scale
+                        img.drawHeight = ih * scale
+                        img.hAlign = 'CENTER'
+                        story.append(Spacer(1, 4))
+                        story.append(img)
+                        story.append(Spacer(1, 8))
+                        # Limpiar temp si se creó
+                        if tmp_to_clean:
+                            try:
+                                import os as _os2
+                                _os2.unlink(tmp_to_clean)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo incrustar imagen: {e}</font>', S['small']))
+                        story.append(Spacer(1, 6))
+                        if tmp_to_clean:
+                            try:
+                                import os as _os3
+                                _os3.unlink(tmp_to_clean)
+                            except Exception:
+                                pass
+                elif not fpath:
+                    # Sin archivo y sin b64
+                    story.append(Paragraph(f'<font color="{COLORS["warning"]}">Imagen no disponible en este entorno (archivo efímero no persistido).</font>', S['small']))
+                    story.append(Spacer(1, 6))
+            elif ext == ".pdf":
+                story.append(Paragraph(
+                    f'<font color="{COLORS["gray"]}">PDF adjunto — se adjunta como archivo separado en el correo. '
+                    f'Ruta: {rel or fname}</font>', S['small']))
+                story.append(Spacer(1, 6))
+            else:
+                # Otros (xlsx, etc): solo listar
+                story.append(Paragraph(
+                    f'<font color="{COLORS["gray"]}">Archivo adjunto: {rel or fname}</font>', S['small']))
+                story.append(Spacer(1, 6))
+        story.append(Spacer(1, 4))
+
     story.append(Spacer(1, 16))
 
     # Factores

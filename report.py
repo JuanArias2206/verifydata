@@ -41,8 +41,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
-# Carpeta de datos (screenshots, certificados, etc)
-DATA_DIR = Path(__file__).parent / "data"
+# Carpeta de datos (screenshots, certificados, etc) — respeta Vercel /tmp
+from sources.base import get_data_path as _rep_get_data_path
+DATA_DIR = _rep_get_data_path()
 STATIC_DIR = Path(__file__).parent / "static"
 BAND_PATH = STATIC_DIR / "report-band.png"
 
