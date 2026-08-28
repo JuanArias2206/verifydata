@@ -1832,6 +1832,8 @@ function previewDoc(input, previewId) {
   var el = document.getElementById(previewId);
   if (!input.files || !input.files[0]) { el.innerHTML = ''; return; }
   var file = input.files[0];
+  // Loader inmediato para feedback
+  el.innerHTML = '<div style="display:flex;align-items:center;gap:8px;color:var(--text-faint);font-size:11px"><span class="spinner" style="width:12px;height:12px;border-width:2px"></span> Cargando '+escH(file.name)+' ('+(file.size/1024).toFixed(0)+' KB)...</div>';
   var sizeMb = file.size / (1024 * 1024);
   var warn = sizeMb > 8
     ? '<div style="color:#b45309;font-weight:600;margin-top:2px">&#9888; Archivo grande (' + sizeMb.toFixed(1) + ' MB) — puede tardar más en subirse</div>'
@@ -3972,17 +3974,34 @@ def api_credit_send_email():
 # ═══════════════════════════════════════════════════════════════════
 #  PÁGINA DE RESULTADOS — /credit/results/<token>
 # ═══════════════════════════════════════════════════════════════════
-#  DESCARGA DE PDF CREDITICIO
+#  DESCARGA DE PDF CREDITICIO — GET y POST (POST con result fallback para token efímero Vercel)
 # ═══════════════════════════════════════════════════════════════════
-@app.route("/download/credit-pdf/<token>")
+@app.route("/download/credit-pdf/<token>", methods=["GET", "POST"])
 def download_credit_pdf(token):
-    """Genera y descarga el PDF del perfil crediticio."""
-    from flask import Response
+    """Genera y descarga el PDF del perfil crediticio. Acepta GET (token) y POST (token+result fallback)."""
+    from flask import Response, request
     import io
 
     result = _get_credit_result(token)
+    # Fallback Vercel efímero: si token no está en DB/in-mem, usar result enviado por POST
+    if not result and request.method == "POST":
+        try:
+            data = request.get_json(silent=True) or {}
+            if data.get("result"):
+                result = data.get("result")
+            elif data.get("DATA"):
+                result = data.get("DATA")
+        except Exception:
+            pass
     if not result:
-        return "Resultado no encontrado", 404
+        # Último intento: si es POST con result en form
+        try:
+            if request.get_json(silent=True) and request.get_json(silent=True).get("result"):
+                result = request.get_json(silent=True).get("result")
+        except Exception:
+            pass
+    if not result:
+        return "Resultado no encontrado - genere una nueva evaluación (token expiró en Vercel sin Postgres)", 404
 
     try:
         from credit_report import generate_credit_pdf
@@ -4265,7 +4284,7 @@ function render(){
   h+='  <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">';
   h+='    <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
   h+='    <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
-  h+='    <a href="/download/credit-pdf/'+window.location.pathname.split('/').pop()+'" class="btn btn-secondary" style="text-decoration:none;padding:12px 28px;font-size:14px" download>&#128196; Descargar PDF</a>';
+  h+='    <button class="btn btn-secondary" onclick="descargarPDF()" id="btn-pdf" style="padding:12px 28px;font-size:14px">&#128196; Descargar PDF</button>';
   h+='    <button class="btn btn-secondary" onclick="enviarCorreo()" id="btn-email" style="padding:12px 28px;font-size:14px">&#9993; Enviar por Correo</button>';
   h+='  </div>';
   if(IS_JEFE){
@@ -4289,6 +4308,44 @@ function toast(msg,type){ var t=document.createElement('div'); t.setAttribute('r
   document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
 function N(v){return Number(v||0).toLocaleString('es-CO');}
 function P(v){return Number(v||0).toFixed(1)+'%';}
+
+function descargarPDF(){
+  var btn=document.getElementById('btn-pdf');
+  var token=window.location.pathname.split('/').pop();
+  if(btn){ btn.disabled=true; btn.innerHTML='&#8987; Generando PDF...'; }
+  // Intentar GET primero (rápido si token está en DB), fallback a POST con DATA si 404 (Vercel efímero)
+  fetch('/download/credit-pdf/'+encodeURIComponent(token), {method:'GET'})
+    .then(function(r){
+      if(r.ok && (r.headers.get('Content-Type')||'').indexOf('application/pdf')>=0){
+        return r.blob().then(function(blob){
+          var url=URL.createObjectURL(blob);
+          var a=document.createElement('a'); a.href=url; a.download='VerifyData_Credito_'+(DATA&&DATA.nombre?DATA.nombre.replace(/ /g,'_'):'cliente')+'.pdf';
+          document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url)}, 5000);
+          if(btn){ btn.disabled=false; btn.innerHTML='&#128196; Descargar PDF'; }
+          toast('PDF descargado','ok');
+        });
+      }
+      // Fallback: POST con result (Vercel efímero)
+      return fetch('/download/credit-pdf/'+encodeURIComponent(token), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({result:DATA})
+      }).then(function(r2){
+        if(!r2.ok) throw new Error('No se pudo generar PDF');
+        return r2.blob().then(function(blob){
+          var url=URL.createObjectURL(blob);
+          var a=document.createElement('a'); a.href=url; a.download='VerifyData_Credito_'+(DATA&&DATA.nombre?DATA.nombre.replace(/ /g,'_'):'cliente')+'.pdf';
+          document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url)}, 5000);
+          if(btn){ btn.disabled=false; btn.innerHTML='&#128196; Descargar PDF'; }
+          toast('PDF descargado','ok');
+        });
+      });
+    })
+    .catch(function(e){
+      if(btn){ btn.disabled=false; btn.innerHTML='&#10007; Error PDF'; btn.style.color='#dc2626'; }
+      toast('Error al descargar PDF: '+(e&&e.message?e.message:e),'error');
+    });
+}
 
 function enviarCorreo(){
   var btn=document.getElementById('btn-email');
