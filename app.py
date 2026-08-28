@@ -1815,8 +1815,7 @@ function previewDoc(input, previewId) {
   var warn = sizeMb > 8
     ? '<div style="color:#b45309;font-weight:600;margin-top:2px">&#9888; Archivo grande (' + sizeMb.toFixed(1) + ' MB) — puede tardar más en subirse</div>'
     : '';
-  var quitarBtn = '<button type="button" onclick="quitarDoc(\'' + input.id + '\',\'' + previewId + '\')" ' +
-    'style="margin-left:8px;background:none;border:none;color:var(--red);font-size:11px;font-weight:600;cursor:pointer;padding:0">Quitar</button>';
+  var quitarBtn = '<button type="button" data-input="'+input.id+'" data-preview="'+previewId+'" onclick="quitarDoc(this.dataset.input, this.dataset.preview)" style="margin-left:8px;background:none;border:none;color:var(--red);font-size:11px;font-weight:600;cursor:pointer;padding:0">Quitar</button>';
   if (file.type.indexOf('image') >= 0) {
     var reader = new FileReader();
     reader.onload = function(e) {
@@ -1841,7 +1840,23 @@ function getDocsFlags() {
   };
 }
 
-var SUBJECTS = {{ subjects_json|safe }};
+var SUBJECTS = [];
+(function(){
+  // Cargar sujetos via fetch para evitar límite de template (65 sujetos ~64KB)
+  fetch('/static/seed_subjects.json')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      if(Array.isArray(data) && data.length){
+        SUBJECTS = data;
+        console.log('SUBJECTS loaded', SUBJECTS.length);
+        // Si la lista estaba vacía antes, renderizar de nuevo
+        if(document.getElementById('subjects-options')){
+          try{ renderSubjects(SUBJECTS); }catch(e){}
+        }
+      }
+    })
+    .catch(function(e){ console.warn('No se pudo cargar seed_subjects.json', e); });
+})();
 
 function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
 
@@ -2324,7 +2339,6 @@ def credito_page():
 
     return render_template_string(
         CREDITO_TEMPLATE,
-        subjects_json=_json.dumps(subjects, ensure_ascii=False),
     )
 
 
