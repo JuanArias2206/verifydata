@@ -40,7 +40,7 @@ Tarea:
 6. Correctitud: validación tipos (FormData strings vs ints), manejo None, cálculo score/monto, cotejo RSales vs Excel, manejo de fechas, etc.
 7. UX: blank results, hang 60s, preview docs, extra-email, cartera filtros, responsive, accesibilidad.
 8. Calidad: lint, tests coverage, tipado, manejo excepciones, logging, audit log.
-9. DevOps: Vercel MCP (opencode.json), GitHub Actions (opencode-review.yml, quality.yml) con ANTHROPIC_API_KEY, env vars por environment (Production/Preview).
+9. DevOps: Vercel MCP (opencode.json), GitHub Actions (opencode-review.yml, quality.yml) sin ANTHROPIC_API_KEY (usa GITHUB_TOKEN), env vars por environment (Production/Preview).
 
 Formato de salida:
 - Tabla o lista numerada 1-50 con columnas: # | Archivo:Línea | Gravedad | Categoría | Hallazgo | Fix
