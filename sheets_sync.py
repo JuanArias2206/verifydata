@@ -40,19 +40,20 @@ def is_configured() -> bool:
 def _get_credentials():
     """Obtiene las credenciales desde env var (JSON string) o archivo."""
     import tempfile
-    
-    # Si _creds_path() es un archivo que existe, usarlo
-    if Path(_creds_path()).exists():
-        return _creds_path()
-    
-    # Si no, asumir que es el JSON string directo
-    if _creds_path().startswith("{"):
-        # Es un JSON string, escribirlo a un archivo temporal
+    creds = _creds_path()
+    # JSON string directo (empieza con {) -> escribir a temp file
+    if creds.startswith("{"):
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            f.write(_creds_path())
+            f.write(creds)
             return f.name
-    
-    return _creds_path()
+    # Si es una ruta que existe, usarla
+    try:
+        if creds and Path(creds).exists():
+            return creds
+    except OSError:
+        # File name too long si es JSON gigante
+        pass
+    return creds
 
 
 # ═══════════════════════════════════════════════════════════════════
