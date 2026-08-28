@@ -426,8 +426,17 @@ def shell_open(active: str, page_title: str, crumb: str) -> str:
     """<body> + sidebar + <main> + topbar. Continúa con el contenido de la página."""
     who = (
         '<div class="who">\n'
-        '  {% if current_user %}<span>{{ current_user.email }}'
-        ' · {{ (current_user.rol or "").title() }}</span>{% endif %}\n'
+        '  {% if current_user %}'
+        '    <span>{{ current_user.email }} · {{ (current_user.rol or "").title() }}</span>'
+        '    <form method="POST" action="/switch-role" style="display:inline-flex;gap:6px;align-items:center;margin-left:8px">'
+        '      <select name="rol" onchange="this.form.submit()" style="font-size:11px;padding:4px 6px;border:1px solid #e5e7eb;border-radius:6px;background:#fff">'
+        '        <option value="ejecutivo" {% if current_user.rol==\"ejecutivo\" %}selected{% endif %}>Ejecutivo</option>'
+        '        <option value="jefe_cartera" {% if current_user.rol=="jefe_cartera" %}selected{% endif %}>Jefe Cartera</option>'
+        '        <option value="admin" {% if current_user.rol=="admin" %}selected{% endif %}>Admin</option>'
+        '      </select>'
+        '      <noscript><button type="submit" class="btn btn-sm">Cambiar</button></noscript>'
+        '    </form>'
+        '  {% endif %}\n'
         '  <div class="avatar-sm"></div>\n'
         '</div>\n'
     )

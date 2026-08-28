@@ -271,6 +271,27 @@ def logout_page():
     return redirect(url_for("login_page"))
 
 
+@app.route("/switch-role", methods=["POST"])
+def switch_role():
+    """Cambia el rol del usuario en sesión (demo). Solo para pruebas."""
+    from flask import session, request, redirect, url_for, g
+    new_rol = (request.form.get("rol") or "").strip().lower()
+    if new_rol not in ("ejecutivo", "jefe_cartera", "admin", "viewer"):
+        new_rol = "ejecutivo"
+    user = session.get("verifydata_user")
+    if user:
+        user["rol"] = new_rol
+        # Actualizar email display si es demo
+        session["verifydata_user"] = user
+        g.user = user
+    # Redirigir a la página de origen o a /
+    next_url = request.referrer or request.form.get("next") or "/"
+    # Sanitizar next_url
+    if not next_url.startswith("/"):
+        next_url = "/"
+    return redirect(next_url)
+
+
 # Content-Security-Policy. Nota: la UI y Swagger usan mucho CSS/JS inline
 # (Bloque C: migrar a templates/ y endurecer), por eso se permite
 # 'unsafe-inline' de momento. unpkg sirve el bundle de Swagger en /api/v1/docs.
@@ -2370,7 +2391,35 @@ def cartera_page():
     from db import credit_request_get_all, is_postgres
     solicitudes = credit_request_get_all()
     is_ephemeral = not is_postgres() and os.environ.get("VERIFYDATA_ENV") == "production"
-    # Fallback a Excel si DB vacía (útil para demo en Vercel sin Postgres)
+    # En Vercel efímero: intentar cargar desde Google Sheets (usado como BD) si está configurado
+    if not solicitudes and is_ephemeral:
+        try:
+            from sheets_sync import is_configured as _sheets_ok, import_solicitudes_from_sheets
+            if _sheets_ok():
+                from sheets_sync import import_solicitudes_from_sheets as _import_sheets
+                sheets_data = _import_sheets()
+                if sheets_data.get("ok") and sheets_data.get("solicitudes"):
+                    for s in sheets_data["solicitudes"][:50]:
+                        # Normalizar de Sheets a formato cartera
+                        solicitudes.append({
+                            "id": s.get("ID") or s.get("id") or f"sheets-{s.get('Cédula') or s.get('cedula')}",
+                            "cedula": s.get("Cédula") or s.get("cedula") or s.get("CÉDULA"),
+                            "nombre": s.get("Nombre") or s.get("nombre"),
+                            "tipo_solicitud": s.get("Tipo") or s.get("tipo_solicitud") or "SOLICITUD DE CREDITO",
+                            "monto_solicitado": float(str(s.get("Monto Solicitado") or s.get("monto_solicitado") or 0).replace(",", "")) if str(s.get("Monto Solicitado") or s.get("monto_solicitado") or 0).replace(",", "").replace(".", "").isdigit() else 0,
+                            "score": int(float(s.get("Score") or s.get("score") or 580)),
+                            "nivel_riesgo": s.get("Nivel Riesgo") or s.get("nivel_riesgo") or "MEDIO",
+                            "estado": (s.get("Estado") or s.get("estado") or "pendiente").lower(),
+                            "ejecutivo": s.get("Ejecutivo") or s.get("ejecutivo") or "",
+                            "aprobado_por": s.get("Aprobado Por") or s.get("aprobado_por") or "",
+                            "created_at": s.get("Fecha Creación") or s.get("created_at") or "2026-08-27 12:00:00",
+                            "observaciones": s.get("Observaciones") or s.get("observaciones") or "",
+                            "_is_sheets": True,
+                        })
+        except Exception as e:
+            import logging
+            logging.getLogger("verifydata.app").warning("Sheets fallback para cartera falló: %s", e)
+    # Fallback a seed si DB y Sheets vacíos (útil para demo en Vercel sin Postgres)
     if not solicitudes:
         try:
             import json as _j2
@@ -3653,6 +3702,32 @@ def api_credit_full_check():
             nivel_riesgo=profile.nivel_riesgo,
             observaciones=excel_data.get("observaciones", ""),
         )
+        # Guardar también en Google Sheets (usado como BD en Vercel efímero) — best-effort
+        try:
+            from sheets_sync import is_configured as _sheets_ok2, append_solicitud_to_sheets
+            if _sheets_ok2():
+                _sheets_row = {
+                    "id": result_token[:8],
+                    "cedula": cedula,
+                    "nombre": _nombre_guardar,
+                    "tipo_solicitud": excel_data.get("tipo_solicitud", "SOLICITUD DE CREDITO"),
+                    "ejecutivo": _ejecutivo_guardar,
+                    "estado": "pendiente",
+                    "monto_solicitado": float(excel_data.get("monto_solicitar", 0) or 0),
+                    "credito_actual": float(excel_data.get("credito_actual", 0) or 0),
+                    "cupo_inicial": float(excel_data.get("cupo_inicial", 0) or 0),
+                    "promedio_compras": float(excel_data.get("promedio_compras", 0) or 0),
+                    "calificacion": float(excel_data.get("calificacion_datacredito", 0) or 0),
+                    "score": int(profile.score),
+                    "nivel_riesgo": profile.nivel_riesgo,
+                    "aprobado_por": "",
+                    "fecha_aprobacion": "",
+                    "observaciones": excel_data.get("observaciones", ""),
+                    "created_at": results.get("fecha_solicitud", ""),
+                }
+                append_solicitud_to_sheets(_sheets_row)
+        except Exception as _e2:
+            log.warning("Sheets append falló (no bloqueante): %s", _e2)
     except Exception as e:
         log.warning("No se pudo guardar credit_request: %s", e)
 

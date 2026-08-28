@@ -223,6 +223,95 @@ def export_approval_history(history: list[dict]) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def import_solicitudes_from_sheets() -> dict:
+    """Importa solicitudes de crédito desde la hoja 'Hoja 1' (usada como BD en Vercel)."""
+    if not is_configured():
+        return {"ok": False, "error": "Google Sheets no configurado"}
+    try:
+        service = get_sheets_service()
+        # Hoja 1 contiene las solicitudes con header en A1
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range="Hoja 1!A:Q"
+        ).execute()
+        values = result.get("values", [])
+        if not values or len(values) < 2:
+            return {"ok": True, "solicitudes": [], "message": "Hoja vacía o solo header"}
+        headers = [h.strip() for h in values[0]]
+        solicitudes = []
+        for row in values[1:]:
+            if not any(cell.strip() for cell in row if cell):
+                continue
+            s = {}
+            for i, h in enumerate(headers):
+                s[h] = row[i] if i < len(row) else ""
+            solicitudes.append(s)
+        return {"ok": True, "solicitudes": solicitudes, "count": len(solicitudes)}
+    except Exception as e:
+        log.error("Error importando solicitudes de Sheets: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+def append_solicitud_to_sheets(solicitud: dict) -> dict:
+    """Añade una sola solicitud al final de Hoja 1 (append, no overwrite). Usado por full-check en Vercel."""
+    if not is_configured():
+        return {"ok": False, "error": "Google Sheets no configurado"}
+    try:
+        service = get_sheets_service()
+        sheet_name = "Hoja 1"
+        # Preparar fila en el orden de headers de Hoja 1
+        row = [
+            str(solicitud.get("id", "")),
+            str(solicitud.get("cedula", "")),
+            str(solicitud.get("nombre", "")),
+            str(solicitud.get("tipo_solicitud", "")),
+            str(solicitud.get("ejecutivo", "")),
+            str(solicitud.get("estado", "")),
+            str(solicitud.get("monto_solicitado", 0)),
+            str(solicitud.get("credito_actual", 0)),
+            str(solicitud.get("cupo_inicial", 0)),
+            str(solicitud.get("promedio_compras", 0)),
+            str(solicitud.get("calificacion", 0)),
+            str(solicitud.get("score", 0)),
+            str(solicitud.get("nivel_riesgo", "")),
+            str(solicitud.get("aprobado_por", "")),
+            str(solicitud.get("fecha_aprobacion", "")),
+            str(solicitud.get("observaciones", "")),
+            str(solicitud.get("created_at", "")),
+        ]
+        # Verificar si header existe, si no, crearlo
+        try:
+            existing = service.spreadsheets().values().get(
+                spreadsheetId=SHEET_ID,
+                range=f'{sheet_name}!A1:Q1'
+            ).execute()
+            if not existing.get("values"):
+                headers = ["ID", "Cédula", "Nombre", "Tipo", "Ejecutivo", "Estado",
+                           "Monto Solicitado", "Crédito Actual", "Cupo Inicial",
+                           "Promedio Compras", "Calificación", "Score", "Nivel Riesgo",
+                           "Aprobado Por", "Fecha Aprobación", "Observaciones", "Fecha Creación"]
+                service.spreadsheets().values().update(
+                    spreadsheetId=SHEET_ID,
+                    range=f'{sheet_name}!A1',
+                    valueInputOption="RAW",
+                    body={"values": [headers]}
+                ).execute()
+        except Exception:
+            pass
+        # Append al final
+        service.spreadsheets().values().append(
+            spreadsheetId=SHEET_ID,
+            range=f'{sheet_name}!A:Q',
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [row]}
+        ).execute()
+        return {"ok": True, "appended": 1}
+    except Exception as e:
+        log.error("Error append solicitud a Sheets: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 def import_clients() -> dict:
     """Importa clientes desde la hoja 'Clientes' de Google Sheets."""
     if not is_configured():
