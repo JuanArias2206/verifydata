@@ -22,31 +22,37 @@ log = logging.getLogger("verifydata.sheets")
 # ═══════════════════════════════════════════════════════════════════
 #  Configuración
 # ═══════════════════════════════════════════════════════════════════
-SHEET_ID = os.environ.get("GOOGLE_SHEETS_ID", "")
-CREDENTIALS_PATH = os.environ.get("GOOGLE_SHEETS_CREDENTIALS", "")
+def _sheet_id() -> str:
+    return os.environ.get("GOOGLE_SHEETS_ID", "").strip()
 
+def _creds_path() -> str:
+    return os.environ.get("GOOGLE_SHEETS_CREDENTIALS", "").strip()
+
+# Compatibilidad: mantener variables pero actualizarlas dinámicamente
+SHEET_ID = _sheet_id()
+CREDENTIALS_PATH = _creds_path()
 
 def is_configured() -> bool:
-    """Verifica si Google Sheets está configurado."""
-    return bool(SHEET_ID and CREDENTIALS_PATH)
+    """Verifica si Google Sheets está configurado (lee env en cada llamada)."""
+    return bool(_sheet_id() and _creds_path())
 
 
 def _get_credentials():
     """Obtiene las credenciales desde env var (JSON string) o archivo."""
     import tempfile
     
-    # Si CREDENTIALS_PATH es un archivo que existe, usarlo
-    if Path(CREDENTIALS_PATH).exists():
-        return CREDENTIALS_PATH
+    # Si _creds_path() es un archivo que existe, usarlo
+    if Path(_creds_path()).exists():
+        return _creds_path()
     
     # Si no, asumir que es el JSON string directo
-    if CREDENTIALS_PATH.startswith("{"):
+    if _creds_path().startswith("{"):
         # Es un JSON string, escribirlo a un archivo temporal
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            f.write(CREDENTIALS_PATH)
+            f.write(_creds_path())
             return f.name
     
-    return CREDENTIALS_PATH
+    return _creds_path()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -142,7 +148,7 @@ def export_credit_requests(solicitudes: list[dict]) -> dict:
         # Verificar si la hoja tiene datos
         try:
             existing = service.spreadsheets().values().get(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_sheet_id(),
                 range=f'{sheet_name}!A1:A1'
             ).execute()
             if not existing.get("values"):
@@ -153,7 +159,7 @@ def export_credit_requests(solicitudes: list[dict]) -> dict:
 
         # Escribir datos
         service.spreadsheets().values().update(
-            spreadsheetId=SHEET_ID,
+            spreadsheetId=_sheet_id(),
             range=f'{sheet_name}!A1',
             valueInputOption="RAW",
             body={"values": rows}
@@ -192,13 +198,13 @@ def export_approval_history(history: list[dict]) -> dict:
         # Verificar si hay datos en las columnas Q:U (historial)
         try:
             existing = service.spreadsheets().values().get(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_sheet_id(),
                 range=f'{sheet_name}!Q1:Q1'
             ).execute()
             if not existing.get("values"):
                 # Agregar headers en columnas Q-U
                 service.spreadsheets().values().update(
-                    spreadsheetId=SHEET_ID,
+                    spreadsheetId=_sheet_id(),
                     range=f'{sheet_name}!Q1',
                     valueInputOption="RAW",
                     body={"values": [headers]}
@@ -209,7 +215,7 @@ def export_approval_history(history: list[dict]) -> dict:
         # Escribir datos en columnas Q-U
         if rows:
             service.spreadsheets().values().update(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_sheet_id(),
                 range=f'{sheet_name}!Q2',
                 valueInputOption="RAW",
                 body={"values": rows}
@@ -231,7 +237,7 @@ def import_solicitudes_from_sheets() -> dict:
         service = get_sheets_service()
         # Hoja 1 contiene las solicitudes con header en A1
         result = service.spreadsheets().values().get(
-            spreadsheetId=SHEET_ID,
+            spreadsheetId=_sheet_id(),
             range="Hoja 1!A:Q"
         ).execute()
         values = result.get("values", [])
@@ -282,7 +288,7 @@ def append_solicitud_to_sheets(solicitud: dict) -> dict:
         # Verificar si header existe, si no, crearlo
         try:
             existing = service.spreadsheets().values().get(
-                spreadsheetId=SHEET_ID,
+                spreadsheetId=_sheet_id(),
                 range=f'{sheet_name}!A1:Q1'
             ).execute()
             if not existing.get("values"):
@@ -291,7 +297,7 @@ def append_solicitud_to_sheets(solicitud: dict) -> dict:
                            "Promedio Compras", "Calificación", "Score", "Nivel Riesgo",
                            "Aprobado Por", "Fecha Aprobación", "Observaciones", "Fecha Creación"]
                 service.spreadsheets().values().update(
-                    spreadsheetId=SHEET_ID,
+                    spreadsheetId=_sheet_id(),
                     range=f'{sheet_name}!A1',
                     valueInputOption="RAW",
                     body={"values": [headers]}
@@ -300,7 +306,7 @@ def append_solicitud_to_sheets(solicitud: dict) -> dict:
             pass
         # Append al final
         service.spreadsheets().values().append(
-            spreadsheetId=SHEET_ID,
+            spreadsheetId=_sheet_id(),
             range=f'{sheet_name}!A:Q',
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
@@ -321,7 +327,7 @@ def import_clients() -> dict:
         service = get_sheets_service()
 
         result = service.spreadsheets().values().get(
-            spreadsheetId=SHEET_ID,
+            spreadsheetId=_sheet_id(),
             range="Clientes!A:K"
         ).execute()
 
@@ -406,6 +412,6 @@ def register_sheets_routes(app):
         from flask import jsonify
         return jsonify({
             "configured": is_configured(),
-            "sheet_id": SHEET_ID[:10] + "..." if SHEET_ID else "",
-            "has_credentials": bool(CREDENTIALS_PATH and Path(CREDENTIALS_PATH).exists())
+            "sheet_id": _sheet_id()[:10] + "..." if _sheet_id() else "",
+            "has_credentials": bool(_creds_path())
         })
