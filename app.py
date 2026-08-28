@@ -4317,7 +4317,11 @@ function enviarCorreo(){
   }).then(function(r){return r.json();}).then(function(d){
     btn.disabled=false;
     if(d.ok){
-      btn.innerHTML='&#10003; Enviado a '+(Array.isArray(d.to)?d.to.join(', '):d.to);
+      var dest = (d.to && Array.isArray(d.to) && d.to.length ? d.to.join(', ') : (d.message || 'Enviado a ' + emails.join(', ')));
+      // Si el mensaje ya es "Correo enviado a X destinatarios", mostrarlo tal cual
+      if(d.message && d.message.indexOf('Correo enviado')===0){ dest = d.message; }
+      else if(d.to && Array.isArray(d.to)){ dest = 'Enviado a ' + d.to.join(', '); }
+      btn.innerHTML='&#10003; ' + dest;
       btn.style.background='#15803d';
       btn.style.color='#fff';
       btn.style.borderColor='#15803d';
