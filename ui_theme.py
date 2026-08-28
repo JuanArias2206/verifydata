@@ -189,7 +189,7 @@ table.dtable{width:100%;border-collapse:collapse;font-size:13px;}
 .field input,.field select{width:100%;border:1px solid var(--line);border-radius:9px;padding:11px 13px;font-size:13.5px;color:var(--text);background:#fff;}
 .field input::placeholder{color:var(--text-faint);}
 .field input:focus,.field select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(62,122,249,0.12);}
-.field label .req{color:var(--red);margin-left:2px;}
+.req{color:var(--red);margin-left:2px;}
 .field.invalid input,.field.invalid select{border-color:var(--red);box-shadow:0 0 0 3px rgba(239,68,68,0.10);}
 .field .field-err{font-size:11.5px;color:var(--red);margin-top:5px;display:none;}
 .field.invalid .field-err{display:block;}

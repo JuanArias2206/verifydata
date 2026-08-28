@@ -158,12 +158,12 @@ LOGIN_TEMPLATE = ui_theme.head_open("VerifyData — Iniciar Sesión") + """
   </div>
   <form method="POST" action="/login{% if next_url %}?next={{ next_url|urlencode }}{% endif %}" style="display:flex;flex-direction:column;gap:12px">
     <div>
-      <label for="login-user" style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Usuario</label>
+      <label for="login-user" style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Usuario<span class="req">*</span></label>
       <input id="login-user" name="username" type="text" placeholder="Usuario" required autofocus
              autocomplete="username" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
     </div>
     <div>
-      <label for="login-pass" style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Contraseña</label>
+      <label for="login-pass" style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Contraseña<span class="req">*</span></label>
       <div style="position:relative">
         <input id="login-pass" name="password" type="password" placeholder="Contraseña" required
                autocomplete="current-password" style="width:100%;padding:10px 40px 10px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
@@ -1607,7 +1607,7 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
     <button type="button" class="btn btn-ghost btn-sm" onclick="descargarExcel()" id="btn-descargar" style="display:none">
       ⬇ Descargar Excel
     </button>
-    <span id="rsales-status" style="font-size:11px;color:var(--text-faint);display:none"></span>
+    <span id="rsales-status" role="status" aria-live="polite" style="font-size:11px;color:var(--text-faint);display:none"></span>
   </div>
 
   <div id="subjects-list" class="card pad subjects-dropdown hidden" style="margin-bottom:16px">
@@ -1801,20 +1801,32 @@ var SUBJECT_INDEX = 0;
   fetch('/api/credit/warm-rsales').catch(function(){});
 })();
 
+function quitarDoc(inputId, previewId) {
+  var input = document.getElementById(inputId);
+  input.value = '';
+  document.getElementById(previewId).innerHTML = '';
+}
+
 function previewDoc(input, previewId) {
   var el = document.getElementById(previewId);
   if (!input.files || !input.files[0]) { el.innerHTML = ''; return; }
   var file = input.files[0];
+  var sizeMb = file.size / (1024 * 1024);
+  var warn = sizeMb > 8
+    ? '<div style="color:#b45309;font-weight:600;margin-top:2px">&#9888; Archivo grande (' + sizeMb.toFixed(1) + ' MB) — puede tardar más en subirse</div>'
+    : '';
+  var quitarBtn = '<button type="button" onclick="quitarDoc(\'' + input.id + '\',\'' + previewId + '\')" ' +
+    'style="margin-left:8px;background:none;border:none;color:var(--red);font-size:11px;font-weight:600;cursor:pointer;padding:0">Quitar</button>';
   if (file.type.indexOf('image') >= 0) {
     var reader = new FileReader();
     reader.onload = function(e) {
-      el.innerHTML = '<img src="' + e.target.result + '">' +
-        '<div class="doc-ok">&#10003; ' + file.name + '</div>';
+      el.innerHTML = '<img src="' + e.target.result + '" alt="Previsualización de ' + escH(file.name) + '">' +
+        '<div class="doc-ok">&#10003; ' + escH(file.name) + quitarBtn + '</div>' + warn;
     };
     reader.readAsDataURL(file);
   } else {
-    el.innerHTML = '<div class="doc-ok">&#10003; ' + file.name + ' (' +
-      (file.size/1024).toFixed(1) + ' KB)</div>';
+    el.innerHTML = '<div class="doc-ok">&#10003; ' + escH(file.name) + ' (' +
+      (file.size/1024).toFixed(1) + ' KB)' + quitarBtn + '</div>' + warn;
   }
 }
 
@@ -1833,7 +1845,7 @@ var SUBJECTS = {{ subjects_json|safe }};
 
 function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
 
-function toast(msg,type){ var t=document.createElement('div'); t.className='toast show'+(type?' '+type:''); t.innerHTML='<span class="dot"></span>'+msg;
+function toast(msg,type){ var t=document.createElement('div'); t.setAttribute('role','status'); t.setAttribute('aria-live','polite'); t.className='toast show'+(type?' '+type:''); t.innerHTML='<span class="dot"></span>'+msg;
   document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
 
 function cargarSiguienteSujeto() {
@@ -1977,21 +1989,45 @@ function ejecutarCheckIntegral() {
   status.style.display = '';
   status.innerHTML = '<span class="spinner"></span> Ejecutando check integral...';
 
-  // Deshabilitar botón
+  // Deshabilitar botón + inputs de archivo para evitar cambios a mitad del envío
   var btns = document.querySelectorAll('.btn-primary');
-  for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+  for (var i = 0; i < btns.length; i++) { btns[i].disabled = true; }
+  var fileInputs = form.querySelectorAll('input[type=file]');
+  for (var fi = 0; fi < fileInputs.length; fi++) { fileInputs[fi].disabled = true; }
+
+  // Reloj de progreso: el check puede tardar varios segundos (RSales + 8 fuentes).
+  var startedAt = Date.now();
+  var progTimer = setInterval(function(){
+    var secs = Math.round((Date.now() - startedAt) / 1000);
+    var msg = secs < 12
+      ? 'Ejecutando check integral...'
+      : 'Consultando RSales y fuentes de antecedentes... (' + secs + 's, puede tardar hasta 1 min)';
+    status.innerHTML = '<span class="spin"></span> ' + msg;
+  }, 1000);
+
+  // Timeout de red: evita que el spinner quede colgado indefinidamente.
+  var controller = ('AbortController' in window) ? new AbortController() : null;
+  var abortTimer = controller ? setTimeout(function(){ controller.abort(); }, 100000) : null;
+
+  function finalizar(){
+    CHECK_EN_CURSO = false;
+    clearInterval(progTimer);
+    if (abortTimer) clearTimeout(abortTimer);
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
+    for (var fi = 0; fi < fileInputs.length; fi++) { fileInputs[fi].disabled = false; }
+  }
 
   // fd already contains the 6 file inputs (if selected) + all text fields
   // No need to JSON-encode; send as multipart/form-data so files travel
   fetch('/api/credit/full-check', {
     method: 'POST',
-    body: fd
+    body: fd,
+    signal: controller ? controller.signal : undefined
   }).then(function(r){
     if (!r.ok) return r.text().then(function(t){ throw new Error('HTTP ' + r.status + ': ' + t.slice(0,200)); });
     return r.json();
   }).then(function(d){
-    CHECK_EN_CURSO = false;
-    for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
+    finalizar();
     if (d.ok) {
       RESULTADO_ACTUAL = d;
       document.getElementById('btn-descargar').style.display = 'inline-flex';
@@ -2000,11 +2036,16 @@ function ejecutarCheckIntegral() {
       window.location.href = '/credit/results/' + d.result_token;
     } else {
       status.innerHTML = '<span style="color:#dc2626">&#10007; Error: ' + escH(d.error || 'Desconocido') + '</span>';
+      toast('Error al evaluar: ' + (d.error || 'Desconocido'), 'error');
     }
   }).catch(function(e){
-    CHECK_EN_CURSO = false;
-    for (var i = 0; i < btns.length; i++) btns[i].disabled = false;
-    status.innerHTML = '<span style="color:#dc2626">&#10007; Error de red: ' + escH(e.message) + '</span>';
+    finalizar();
+    var aborted = e && e.name === 'AbortError';
+    var msg = aborted
+      ? 'La consulta tardó demasiado (>100s) y se canceló. Intenta de nuevo o revisa RSales.'
+      : 'Error de red: ' + e.message;
+    status.innerHTML = '<span style="color:#dc2626">&#10007; ' + escH(msg) + '</span>';
+    toast(msg, 'error');
   });
 }
 
@@ -2372,7 +2413,7 @@ CARTERA_TEMPLATE = ui_theme.head_open("VerifyData — Cartera") + \
   .filter-bar .search{flex:1;min-width:200px}
   .role-badge{display:inline-block;padding:3px 8px;border-radius:8px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:8px}
   .role-badge.ejecutivo{background:rgba(62,122,249,.12);color:#1d4ed8}
-  .role-badge.jefe{background:rgba(105,65,244,.12);color:#5b21b6}
+  .role-badge.jefe_cartera,.role-badge.jefe{background:rgba(105,65,244,.12);color:#5b21b6}
   .role-badge.admin{background:rgba(34,197,94,.12);color:#15803d}
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px}
   .modal{background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:80vh;overflow:auto;box-shadow:0 20px 40px rgba(0,0,0,.2)}
@@ -2406,7 +2447,8 @@ CARTERA_TEMPLATE = ui_theme.head_open("VerifyData — Cartera") + \
         {% endif %}
       </p>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span id="sheets-badge" class="badge b-gris" style="display:none"><span class="badge-dot"></span><span id="sheets-badge-txt">Sheets</span></span>
       <button class="btn btn-secondary btn-sm" onclick="syncSheets()" id="btn-sync">↻ Sincronizar Sheets</button>
       <a class="btn btn-ghost btn-sm" href="/credito">+ Nueva evaluación</a>
     </div>
@@ -2465,6 +2507,8 @@ var SOLICITUDES = {{ solicitudes_json|safe }};
 var CURRENT_ROL = "{{ current_user.rol if current_user else '' }}";
 var IS_JEFE = (CURRENT_ROL === 'jefe_cartera' || CURRENT_ROL === 'admin');
 function escH(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+function toast(msg,type){ var t=document.createElement('div'); t.setAttribute('role','status'); t.setAttribute('aria-live','polite'); t.className='toast show'+(type?' '+type:''); t.innerHTML='<span class="dot"></span>'+escH(msg);
+  document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
 function renderCartera(){
   var q=(document.getElementById('f-search').value||'').toUpperCase().trim();
   var fe=document.getElementById('f-estado').value;
@@ -2485,7 +2529,14 @@ function renderCartera(){
   document.getElementById('kpi-rech').textContent=SOLICITUDES.filter(function(s){return s.estado==='rechazado'}).length;
 
   var html='';
-  if(!filtered.length){html='<tr><td colspan="10" style="text-align:center;padding:20px;color:#999">No hay solicitudes con esos filtros</td></tr>';}
+  if(!filtered.length){
+    var hasFilters = !!(q || fe || ft);
+    html='<tr><td colspan="10" style="text-align:center;padding:40px 20px;color:#9ca3af">'+
+      '<div style="font-size:28px;margin-bottom:8px">'+(hasFilters?'&#128269;':'&#128203;')+'</div>'+
+      '<div style="font-size:13px;font-weight:600;color:#6b7280">'+(hasFilters?'Sin resultados para esos filtros':'Aún no hay solicitudes de crédito')+'</div>'+
+      (hasFilters?'<div style="font-size:12px;margin-top:4px">Prueba con otro término o quita los filtros</div>':'<div style="font-size:12px;margin-top:4px">Créalas desde <a href="/credito" style="color:var(--violet)">Perfil crediticio</a></div>')+
+      '</td></tr>';
+  }
   filtered.forEach(function(s){
     var pillClass='pill-pendiente';
     if(s.estado==='aprobado')pillClass='pill-aprobado';
@@ -2534,18 +2585,18 @@ function aprobar(id){
   fetch('/api/credit/approve',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}'})
   }).then(function(r){return r.json();}).then(function(d){
-    if(d.ok){location.reload();}else{alert(d.error||'No autorizado — solo Jefe Cartera puede aprobar');}
-  });
+    if(d.ok){location.reload();}else{toast(d.error||'No autorizado — solo Jefe Cartera puede aprobar','error');}
+  }).catch(function(e){toast('Error de red: '+e.message,'error');});
 }
 function rechazar(id){
   var motivo=prompt('Motivo del rechazo (obligatorio para auditoría):');
   if(motivo===null) return;
-  if(!motivo.trim()){alert('Debe indicar un motivo');return;}
+  if(!motivo.trim()){toast('Debe indicar un motivo','warn');return;}
   fetch('/api/credit/reject',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}',motivo:motivo})
   }).then(function(r){return r.json();}).then(function(d){
-    if(d.ok){location.reload();}else{alert(d.error||'Error');}
-  });
+    if(d.ok){location.reload();}else{toast(d.error||'Error','error');}
+  }).catch(function(e){toast('Error de red: '+e.message,'error');});
 }
 function revertir(id){
   if(!confirm('¿Revertir solicitud #'+id+' a PENDIENTE? Se quitará la aprobación/rechazo anterior.'))return;
@@ -2553,12 +2604,12 @@ function revertir(id){
   fetch('/api/credit/revert',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}',motivo:motivo})
   }).then(function(r){return r.json();}).then(function(d){
-    if(d.ok){location.reload();}else{alert(d.error||'Error al revertir');}
-  });
+    if(d.ok){location.reload();}else{toast(d.error||'Error al revertir','error');}
+  }).catch(function(e){toast('Error de red: '+e.message,'error');});
 }
 function verHistorial(id){
   var modal=document.getElementById('hist-modal');
-  modal.innerHTML='<div class="modal-overlay" onclick="if(event.target===this) cerrarHist()"><div class="modal"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3>📋 Historial #'+id+'</h3><button class="btn btn-ghost btn-sm" onclick="cerrarHist()">✕</button></div><div id="hist-body" style="text-align:center;padding:20px"><span class="spin"></span> Cargando...</div></div></div>';
+  modal.innerHTML='<div class="modal-overlay" onclick="if(event.target===this) cerrarHist()"><div class="modal" role="dialog" aria-modal="true" aria-label="Historial #'+id+'"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3>📋 Historial #'+id+'</h3><button class="btn btn-ghost btn-sm" onclick="cerrarHist()" aria-label="Cerrar historial">✕</button></div><div id="hist-body" style="text-align:center;padding:20px"><span class="spin"></span> Cargando...</div></div></div>';
   modal.style.display='block';
   fetch('/api/credit/history/'+id).then(function(r){return r.json();}).then(function(d){
     var html='';
@@ -2587,16 +2638,31 @@ document.addEventListener('keydown',function(e){
     if(m && m.style.display!=='none') cerrarHist();
   }
 });
+function pintarSheetsBadge(configured){
+  var b=document.getElementById('sheets-badge'), t=document.getElementById('sheets-badge-txt');
+  if(!b) return;
+  b.style.display='inline-flex';
+  b.className='badge '+(configured?'b-verde':'b-gris');
+  t.textContent=configured?'Sheets conectado':'Sheets no configurado';
+}
+fetch('/api/sheets/status').then(function(r){return r.json();}).then(function(d){
+  pintarSheetsBadge(!!d.configured);
+}).catch(function(){});
 function syncSheets(){
   var btn=document.getElementById('btn-sync');
   if(btn){btn.disabled=true;btn.textContent='⏳ Sincronizando...';}
   fetch('/api/sheets/sync',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
     if(btn){btn.disabled=false;btn.textContent='↻ Sincronizar Sheets';}
-    if(d.ok){alert('✓ Sincronizado: '+JSON.stringify(d.results||d));}
-    else {alert('Error Sheets: '+(d.error||JSON.stringify(d)));}
+    if(d.ok){
+      var n=(d.results&&(d.results.exported||d.results.count))||d.exported||d.count;
+      toast('✓ Sheets sincronizado'+(n!=null?' — '+n+' filas':''),'ok');
+      pintarSheetsBadge(true);
+    } else {
+      toast('Error Sheets: '+(d.error||'No se pudo sincronizar'),'error');
+    }
   }).catch(function(e){
     if(btn){btn.disabled=false;btn.textContent='↻ Sincronizar Sheets';}
-    alert('Error: '+e.message);
+    toast('Error de red: '+e.message,'error');
   });
 }
 renderCartera();
@@ -4116,6 +4182,8 @@ function render(){
 }
 
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+function toast(msg,type){ var t=document.createElement('div'); t.setAttribute('role','status'); t.setAttribute('aria-live','polite'); t.className='toast show'+(type?' '+type:''); t.innerHTML='<span class="dot"></span>'+esc(msg);
+  document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
 function N(v){return Number(v||0).toLocaleString('es-CO');}
 function P(v){return Number(v||0).toFixed(1)+'%';}
 
@@ -4131,7 +4199,8 @@ function enviarCorreo(){
   if(extra){
     // Validar email simple
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(extra)){
-      alert('Correo adicional no válido: '+extra);
+      toast('Correo adicional no válido: '+extra,'warn');
+      if(extraEl){extraEl.style.borderColor='#ef4444';extraEl.focus();}
       btn.disabled=false;
       btn.innerHTML='&#9993; Enviar por Correo';
       return;
