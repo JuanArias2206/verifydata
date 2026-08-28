@@ -172,6 +172,8 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
 
     S = _make_styles()
     story = []
+    # Temp files que deben limpiarse DESPUÉS de doc.build (reportlab lee en draw time)
+    _tmp_files: list[str] = []
 
     p = result.get('perfil_crediticio', {})
     res = result.get('resumen_ejecutivo', {})
@@ -564,17 +566,18 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
             rel = a.get("relative_path") or ""
             fpath = None
             try:
+                saved = (a.get("saved_path") or "").strip()
                 if rel:
                     cand = DATA_DIR / rel
-                    if cand.exists():
+                    if cand.exists() and cand.is_file():
                         fpath = cand
-                    else:
-                        cand2 = Path(a.get("saved_path", ""))
-                        if cand2.exists():
+                    elif saved and saved != ".":
+                        cand2 = Path(saved)
+                        if cand2.exists() and cand2.is_file():
                             fpath = cand2
-                else:
-                    cand2 = Path(a.get("saved_path", ""))
-                    if cand2.exists():
+                elif saved and saved != ".":
+                    cand2 = Path(saved)
+                    if cand2.exists() and cand2.is_file():
                         fpath = cand2
             except Exception:
                 fpath = None
@@ -602,6 +605,7 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                         tf.close()
                         img_source = tf.name
                         tmp_to_clean = tf.name
+                        _tmp_files.append(tmp_to_clean)
                     except Exception as e:
                         story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo decodificar imagen b64: {e}</font>', S['small']))
                         story.append(Spacer(1, 6))
@@ -620,17 +624,12 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                         story.append(Spacer(1, 4))
                         story.append(img)
                         story.append(Spacer(1, 8))
-                        # Limpiar temp si se creó
-                        if tmp_to_clean:
-                            try:
-                                import os as _os2
-                                _os2.unlink(tmp_to_clean)
-                            except Exception:
-                                pass
                     except Exception as e:
                         story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo incrustar imagen: {e}</font>', S['small']))
                         story.append(Spacer(1, 6))
-                        if tmp_to_clean:
+                        # Si falló, quitar de lista de limpieza para no borrar dos veces (se limpiará al final)
+                        if tmp_to_clean and tmp_to_clean in _tmp_files:
+                            _tmp_files.remove(tmp_to_clean)
                             try:
                                 import os as _os3
                                 _os3.unlink(tmp_to_clean)
@@ -660,34 +659,27 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                     _fitz_ok = False
                     try:
                         import fitz as _fitz, tempfile as _tf_fitz, os as _os_fitz
-                        import sys as _dbg_fitz
-                        print(f"DEBUG FITZ START: {fname}, {len(pdf_bytes_for_render)} bytes", file=_dbg_fitz.stderr, flush=True)
                         _fitz_doc = _fitz.open(stream=pdf_bytes_for_render, filetype="pdf")
                         _total_pages = len(_fitz_doc)
-                        print(f"DEBUG FITZ DOC: {_total_pages} pages", file=_dbg_fitz.stderr, flush=True)
                         story.append(Paragraph(
                             f'<font color="{COLORS["primary_dark"]}" size="9"><b>📄 {fname}</b> '
                             f'({_size_kb:.1f} KB — {_total_pages} página(s))</font>',
                             S['small']))
                         story.append(Spacer(1, 4))
                         for _pi in range(min(_total_pages, 3)):
-                            import sys as _dbg_fitz2
-                            print(f"DEBUG FITZ LOOP: page {_pi+1}/{_total_pages}", file=_dbg_fitz2.stderr, flush=True)
                             _page = _fitz_doc[_pi]
                             _pix = _page.get_pixmap(dpi=130)
-                            print(f"DEBUG FITZ PIX: {_pix.width}x{_pix.height}", file=_dbg_fitz2.stderr, flush=True)
                             _tf_img = _tf_fitz.NamedTemporaryFile(delete=False, suffix=".png")
                             _pix.save(_tf_img.name)
                             _tf_img.close()
+                            _tmp_files.append(_tf_img.name)
                             try:
-                                import sys as _dbg_fitz3
                                 _img = Image(_tf_img.name)
                                 _max_w, _max_h = 5.5*inch, 3.6*inch
                                 _iw, _ih = _img.imageWidth, _img.imageHeight
                                 _scale = min(_max_w/_iw if _iw else 1, _max_h/_ih if _ih else 1, 1)
                                 _img.drawWidth, _img.drawHeight = _iw*_scale, _ih*_scale
                                 _img.hAlign = 'CENTER'
-                                print(f"DEBUG FITZ IMG: {_iw}x{_ih} -> {_img.drawWidth}x{_img.drawHeight}", file=_dbg_fitz3.stderr, flush=True)
                                 story.append(Paragraph(
                                     f'<font color="{COLORS["gray"]}" size="8">Página {_pi+1}/{_total_pages} — {fname}</font>',
                                     S['tiny']))
@@ -695,19 +687,15 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                                 story.append(_img)
                                 story.append(Spacer(1, 8))
                                 _fitz_ok = True
-                                print(f"DEBUG FITZ APPENDED: story now has {len(story)} elements", file=_dbg_fitz3.stderr, flush=True)
-                            except Exception as e:
-                                import sys as _dbg_fitz4
-                                print(f"DEBUG FITZ IMAGE FAIL: {e}", file=_dbg_fitz4.stderr, flush=True)
-                            finally:
+                            except Exception:
+                                # Si falló, quitar de lista y borrar
+                                if _tf_img.name in _tmp_files:
+                                    _tmp_files.remove(_tf_img.name)
                                 try: _os_fitz.unlink(_tf_img.name)
                                 except Exception: pass
                         _fitz_doc.close()
-                    except Exception as e:
-                        import sys as _dbg4
-                        print(f"DEBUG FITZ FAIL: {fname} error={e}", file=_dbg4.stderr, flush=True)
-                    import sys as _dbg5
-                    print(f"DEBUG _fitz_ok={_fitz_ok} for {fname}", file=_dbg5.stderr, flush=True)
+                    except Exception:
+                        pass
                     # 2) fallback: pypdf → texto
                     if not _fitz_ok:
                         try:
@@ -748,6 +736,18 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                     story.append(Paragraph(
                         f'<font color="{COLORS["gray"]}" size="7">📎 El PDF original completo se adjunta como archivo en el correo.</font>',
                         S['tiny']))
+                    story.append(Spacer(1, 6))
+                else:
+                    # PDF sin bytes (b64 perdido y archivo efímero no existe) — aún mostrar registro con aviso
+                    _size_kb = a.get("size", 0) / 1024
+                    story.append(Paragraph(
+                        f'<font color="{COLORS["primary_dark"]}" size="9"><b>📄 {fname}</b> '
+                        f'({_size_kb:.1f} KB)</font>',
+                        S['small']))
+                    story.append(Paragraph(
+                        f'<font color="{COLORS["warning"]}" size="8"><i>Contenido no disponible en este entorno (archivo efímero no persistido). '
+                        f'El PDF original se adjunta en el correo cuando está disponible.</i></font>',
+                        S['small']))
                     story.append(Spacer(1, 6))
             else:
                 # Otros (xlsx, etc): solo listar
@@ -885,7 +885,17 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
     ))
 
     # Construir PDF final (ya incluye anexos renderizados como imágenes via fitz)
-    doc.build(story)
+    try:
+        doc.build(story)
+    finally:
+        # Limpiar todos los temporales creados para anexos (después de build)
+        for _tp in list(_tmp_files):
+            try:
+                import os as _oclean
+                if os.path.exists(_tp):
+                    _oclean.unlink(_tp)
+            except Exception:
+                pass
 
     if output_path is None:
         # Retornar desde memoria

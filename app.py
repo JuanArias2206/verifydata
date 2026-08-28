@@ -629,7 +629,7 @@ TEMPLATE_RESULTS = ui_theme.head_open("VerifyData — Resultado de verificación
     levelEl.textContent = p.nivel_riesgo;
     levelEl.style.color = CR_COLORS[p.nivel_riesgo] || '#333';
     recEl.textContent = p.recomendacion;
-    montoEl.textContent = p.monto_maximo_recomendado > 0 ? ('\$' + p.monto_maximo_recomendado.toLocaleString('es-CO')) : '—';
+    montoEl.textContent = p.monto_maximo_recomendado > 0 ? ('$' + p.monto_maximo_recomendado.toLocaleString('es-CO')) : '—';
 
     if (p.alertas && p.alertas.length) {
       alertasEl.innerHTML = p.alertas.slice(0,3).map(function(a){return '<div style=\"font-size:11px;color:#b91c1c;font-weight:600;margin-top:2px\">⚠ '+esc(a)+'</div>';}).join('');
@@ -651,9 +651,9 @@ TEMPLATE_RESULTS = ui_theme.head_open("VerifyData — Resultado de verificación
     if (rd) {
       document.getElementById('cr-rsales-detail').style.display = '';
       document.getElementById('cr-rsales-data').innerHTML =
-        '<div><b>Cartera total</b><br>\$'+(rd.cartera_total||0).toLocaleString('es-CO')+'</div>' +
-        '<div><b>Cartera vencida</b><br>\$'+(rd.cartera_vencida||0).toLocaleString('es-CO')+' ('+(rd.pct_vencida||0).toFixed(0)+'%)</div>' +
-        '<div><b>Compras RSales</b><br>\$'+(rd.compras_total||0).toLocaleString('es-CO')+'</div>' +
+        '<div><b>Cartera total</b><br>$'+(rd.cartera_total||0).toLocaleString('es-CO')+'</div>' +
+        '<div><b>Cartera vencida</b><br>$'+(rd.cartera_vencida||0).toLocaleString('es-CO')+' ('+(rd.pct_vencida||0).toFixed(0)+'%)</div>' +
+        '<div><b>Compras RSales</b><br>$'+(rd.compras_total||0).toLocaleString('es-CO')+'</div>' +
         '<div><b>Pedidos</b><br>'+(rd.num_pedidos||0)+' · Últ: '+(rd.ultima_compra||'N/A').slice(0,10)+'</div>';
     }
 
@@ -2070,6 +2070,15 @@ function ejecutarCheckIntegral() {
       RESULTADO_ACTUAL = d;
       document.getElementById('btn-descargar').style.display = 'inline-flex';
       status.innerHTML = '&#10003; Check completo — Redirigiendo...';
+      // Persistir resultado completo (con b64) en sessionStorage para que /credit/results lo recupere
+      // en Vercel efímero donde /tmp y SQLite no persisten entre lambdas.
+      try{
+        if(d.result && d.result_token){
+          sessionStorage.setItem('credit_result_'+d.result_token, JSON.stringify(d.result));
+          // Guardar también timestamp para limpieza
+          sessionStorage.setItem('credit_result_'+d.result_token+'_ts', String(Date.now()));
+        }
+      }catch(e){}
       // Redirigir directo a la página de resultados
       window.location.href = '/credit/results/' + d.result_token;
     } else {
@@ -2212,9 +2221,9 @@ function renderResultado(d) {
     rsalesBlock = '<div style="margin-top:16px;padding:14px;background:rgba(62,122,249,.06);border-radius:10px">'+
       '<div style="font-weight:700;font-size:12px;color:var(--blue);margin-bottom:10px">📡 Datos RSales</div>'+
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px">'+
-        '<div><b>Cartera total</b><br>\$'+(r.cartera_total||0).toLocaleString('es-CO')+'</div>'+
-        '<div><b>Cartera vencida</b><br><span style="color:'+(r.pct_vencida>30?'#dc2626':'green')+'">\$'+(r.cartera_vencida||0).toLocaleString('es-CO')+' ('+(r.pct_vencida||0).toFixed(0)+'%)</span></div>'+
-        '<div><b>Compras total</b><br>\$'+(r.compras_total||0).toLocaleString('es-CO')+'</div>'+
+        '<div><b>Cartera total</b><br>$'+(r.cartera_total||0).toLocaleString('es-CO')+'</div>'+
+        '<div><b>Cartera vencida</b><br><span style="color:'+(r.pct_vencida>30?'#dc2626':'green')+'">$'+(r.cartera_vencida||0).toLocaleString('es-CO')+' ('+(r.pct_vencida||0).toFixed(0)+'%)</span></div>'+
+        '<div><b>Compras total</b><br>$'+(r.compras_total||0).toLocaleString('es-CO')+'</div>'+
         '<div><b>Nº pedidos</b><br>'+(r.num_pedidos||0)+' · Últ: '+(r.ultima_compra||'N/A').slice(0,10)+'</div>'+
       '</div></div>';
   }
@@ -2238,12 +2247,12 @@ function renderResultado(d) {
       '</div>'+
       '<div style="flex:1;min-width:200px">'+
         '<div style="font-weight:700;font-size:16px;margin-bottom:4px">'+escH(p.recomendacion)+'</div>'+
-        '<div style="font-size:13px;color:var(--text-dim)">Monto máximo recomendado: <b>\$'+(p.monto_maximo_recomendado||0).toLocaleString('es-CO')+'</b></div>'+
+        '<div style="font-size:13px;color:var(--text-dim)">Monto máximo recomendado: <b>$'+(p.monto_maximo_recomendado||0).toLocaleString('es-CO')+'</b></div>'+
         alertsHtml +
       '</div>'+
     '</div>'+
     '<div class="stats">'+
-      '<div><div class="stat-val" style="color:'+bg+'">'+(p.detalle&&p.detalle.excel?('\$'+(p.detalle.excel.promedio_compras||0).toLocaleString('es-CO')):'—')+'</div><div class="stat-lbl">Promedio compras</div></div>'+
+      '<div><div class="stat-val" style="color:'+bg+'">'+(p.detalle&&p.detalle.excel?('$'+(p.detalle.excel.promedio_compras||0).toLocaleString('es-CO')):'—')+'</div><div class="stat-lbl">Promedio compras</div></div>'+
       '<div><div class="stat-val">'+(p.detalle&&p.detalle.excel?(p.detalle.excel.numero_compras||0):'—')+'</div><div class="stat-lbl">Nº compras</div></div>'+
       '<div><div class="stat-val">'+(p.detalle&&p.detalle.excel?(p.detalle.excel.promedio_pago_dias||'—'):'—')+'</div><div class="stat-lbl">Promedio pago (días)</div></div>'+
       '<div><div class="stat-val">'+(p.detalle&&p.detalle.excel&&p.detalle.excel.calificacion_datacredito!=null?p.detalle.excel.calificacion_datacredito:'—')+'</div><div class="stat-lbl">Datacrédito</div></div>'+
@@ -3789,10 +3798,17 @@ def api_credit_send_email():
     # Fallback para Vercel efímero: si token no está en DB/in-mem, usar result enviado por frontend
     if not result and data.get("result"):
         result = data.get("result")
-        # Si el result viene sin anexos b64 (por strip en results page), intentar recuperar b64 desde DB con token parcial si existe
-        if result and not result.get("anexos"):
-            # No hacer nada, el PDF se generará sin b64 pero con texto
-            pass
+    # Si result existe pero sus anexos no tienen b64 (stripped), intentar enriquecer desde DB
+    if result:
+        needs_b64 = any(a and not a.get("b64") for a in (result.get("anexos") or []))
+        if needs_b64:
+            db_result = _get_credit_result(token)
+            if db_result and db_result.get("anexos"):
+                db_map = {(a.get("original_name") or a.get("saved_name")): a.get("b64") for a in db_result.get("anexos", []) if a.get("b64")}
+                for a in result.get("anexos", []):
+                    key = a.get("original_name") or a.get("saved_name")
+                    if not a.get("b64") and key in db_map:
+                        a["b64"] = db_map[key]
     if not result:
         return jsonify({"ok": False, "error": "Resultado no encontrado. Genere una nueva evaluación o el token expiró (DB efímera sin Postgres)."}), 404
 
@@ -3975,6 +3991,18 @@ def api_credit_send_email():
 #  PÁGINA DE RESULTADOS — /credit/results/<token>
 # ═══════════════════════════════════════════════════════════════════
 #  DESCARGA DE PDF CREDITICIO — GET y POST (POST con result fallback para token efímero Vercel)
+@app.route("/api/credit/result/<token>")
+def api_credit_result(token):
+    """Devuelve el resultado completo del check integral (incluye b64 para anexos).
+    Usado por la página de resultados para recuperar b64 cuando el inline DATA está stripped
+    y para que descargarPDF / enviarCorreo funcionen en Vercel efímero."""
+    from flask import jsonify
+    result = _get_credit_result(token)
+    if not result:
+        return jsonify({"ok": False, "error": "Resultado no encontrado"}), 404
+    return jsonify({"ok": True, "result": result})
+
+
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/download/credit-pdf/<token>", methods=["GET", "POST"])
 def download_credit_pdf(token):
@@ -3991,15 +4019,32 @@ def download_credit_pdf(token):
                 result = data.get("result")
             elif data.get("DATA"):
                 result = data.get("DATA")
+            elif data.get("data"):
+                result = data.get("data")
         except Exception:
             pass
-    if not result:
-        # Último intento: si es POST con result en form
+    if not result and request.method == "POST":
+        # También aceptar result como form field (fallback)
         try:
-            if request.get_json(silent=True) and request.get_json(silent=True).get("result"):
-                result = request.get_json(silent=True).get("result")
+            j = request.get_json(silent=True) or {}
+            if j.get("result"):
+                result = j.get("result")
         except Exception:
             pass
+    # Si aún hay result pero sus anexos no tienen b64 (stripped), intentar recuperar desde DB con merge
+    # (esto cubre el caso donde GET falló por lambda distinta pero el POST trae stripped DATA)
+    if result:
+        # Si anexos sin b64, intentar enriquecer desde DB si existe algún stub
+        needs_b64 = any(a and not a.get("b64") for a in (result.get("anexos") or []))
+        if needs_b64:
+            db_result = _get_credit_result(token)
+            if db_result and db_result.get("anexos"):
+                # merge b64 desde DB hacia result
+                db_map = {(a.get("original_name") or a.get("saved_name")): a.get("b64") for a in db_result.get("anexos", []) if a.get("b64")}
+                for a in result.get("anexos", []):
+                    key = a.get("original_name") or a.get("saved_name")
+                    if not a.get("b64") and key in db_map:
+                        a["b64"] = db_map[key]
     if not result:
         return "Resultado no encontrado - genere una nueva evaluación (token expiró en Vercel sin Postgres)", 404
 
@@ -4132,8 +4177,73 @@ RESULTS_TEMPLATE = ui_theme.head_open("VerifyData — Resultado Crediticio") + \
 
 <script>
 var DATA = {{ result_json|safe }};
+// ── Enriquecer DATA.anexos con b64 desde sessionStorage (Vercel efímero) ──
+(function(){
+  var tk = window.location.pathname.split('/').pop();
+  try{
+    var stored = JSON.parse(sessionStorage.getItem('credit_result_'+tk) || 'null');
+    if(stored && Array.isArray(stored.anexos)){
+      var mp={};
+      stored.anexos.forEach(function(a){ if(a && a.b64) mp[a.original_name||a.saved_name]=a.b64; });
+      // Si DATA vino sin anexos pero stored tiene, copiar
+      if((!DATA.anexos || !DATA.anexos.length) && stored.anexos.length){ DATA.anexos = JSON.parse(JSON.stringify(stored.anexos)); }
+      else {
+        (DATA.anexos||[]).forEach(function(a){
+          var k=a.original_name||a.saved_name;
+          if(!a.b64 && mp[k]) a.b64=mp[k];
+          // también copiar mimetype/size si faltan
+          var src = stored.anexos.find(function(s){ return (s.original_name||s.saved_name)===k; });
+          if(src){
+            if(!a.mimetype && src.mimetype) a.mimetype=src.mimetype;
+            if(!a.size && src.size) a.size=src.size;
+          }
+        });
+      }
+    }
+  }catch(e){}
+  // Intentar completar desde API si aún falta b64 (segundo intento async que re-renderiza)
+  var needsB64 = (DATA.anexos||[]).some(function(a){return !a.b64;});
+  if(needsB64){
+    fetch('/api/credit/result/'+encodeURIComponent(tk)).then(function(r){return r.json();}).then(function(j){
+      if(j && j.ok && j.result && Array.isArray(j.result.anexos)){
+        var mp2={};
+        j.result.anexos.forEach(function(a){ if(a && a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
+        var changed=false;
+        (DATA.anexos||[]).forEach(function(a){
+          var k=a.original_name||a.saved_name;
+          if(!a.b64 && mp2[k]){ a.b64=mp2[k]; changed=true; }
+        });
+        if(changed){ try{ render(); }catch(e){} }
+      }
+    }).catch(function(){});
+  }
+})();
 
 function $(id){return document.getElementById(id)}
+function _getEnrichedData(cb){
+  var tk = window.location.pathname.split('/').pop();
+  var hasB64 = (DATA.anexos||[]).some(function(a){return !!a.b64;});
+  if(hasB64){ cb(DATA); return; }
+  // Re-intentar sessionStorage sync
+  try{
+    var st = JSON.parse(sessionStorage.getItem('credit_result_'+tk)||'null');
+    if(st && st.anexos){
+      var mp={};
+      st.anexos.forEach(function(a){ if(a.b64) mp[a.original_name||a.saved_name]=a.b64; });
+      (DATA.anexos||[]).forEach(function(a){ if(!a.b64 && mp[a.original_name||a.saved_name]) a.b64=mp[a.original_name||a.saved_name]; });
+      if((DATA.anexos||[]).some(function(a){return !!a.b64;})){ cb(DATA); return; }
+    }
+  }catch(e){}
+  // Fetch API
+  fetch('/api/credit/result/'+encodeURIComponent(tk)).then(function(r){return r.json();}).then(function(j){
+    if(j && j.ok && j.result && Array.isArray(j.result.anexos)){
+      var mp2={};
+      j.result.anexos.forEach(function(a){ if(a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
+      (DATA.anexos||[]).forEach(function(a){ if(!a.b64 && mp2[a.original_name||a.saved_name]) a.b64=mp2[a.original_name||a.saved_name]; });
+    }
+    cb(DATA);
+  }).catch(function(){ cb(DATA); });
+}
 function render(){
   try {
     if(!DATA || typeof DATA !== 'object'){
@@ -4247,16 +4357,27 @@ function render(){
       var a=anexos[ai];
       var fname=esc(a.original_name||a.saved_name||'archivo');
       var sz=a.size ? (a.size/1024).toFixed(1)+' KB' : '';
-      var isImg = fname.toLowerCase().match(/\.(png|jpg|jpeg|gif|webp)$/);
-      h+='<div style="display:flex;align-items:center;gap:10px;padding:8px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;font-size:12px">';
-      h+='  <span style="font-weight:600">'+fname+' <span style="color:#9ca3af;font-weight:400">('+sz+')</span></span>';
+      var lower = fname.toLowerCase();
+      var isImg = lower.match(/\\.(png|jpg|jpeg|gif|webp|bmp)$/);
+      var isPdf = lower.match(/\\.pdf$/);
+      h+='<div style="display:flex;align-items:center;gap:10px;padding:8px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;font-size:12px;flex-wrap:wrap">';
+      h+='  <span style="font-weight:600">'+fname+' <span style="color:#9ca3af;font-weight:400">('+sz+(a.mimetype?' — '+esc(a.mimetype):'')+')</span></span>';
       if(isImg && a.b64){
         h+='  <img src="data:'+(a.mimetype||'image/png')+';base64,'+a.b64+'" style="width:60px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #e5e7eb">'
+      } else if(isPdf && a.b64){
+        h+='  <span style="color:#2563eb;font-weight:600">📄 PDF listo — se incrustará en el PDF descargable</span>';
+        h+='  <a href="data:'+(a.mimetype||'application/pdf')+';base64,'+a.b64+'" download="'+fname+'" style="color:#6941f4;text-decoration:none;font-weight:600;margin-left:6px">Descargar</a>';
+      } else if(isPdf){
+        h+='  <span style="color:#d97706;font-weight:600">📄 PDF — se adjuntará en el correo</span>';
+        if(a.relative_path) h+='  <a href="/download/'+esc(a.relative_path)+'" target="_blank" style="color:#6941f4;text-decoration:none;font-weight:600">Ver</a>';
       } else if(a.relative_path){
-        h+='  <a href="/download/'+esc(a.relative_path)+'" target="_blank" style="color:#6941f4;text-decoration:none;font-weight:600">Ver</a>'
+        h+='  <a href="/download/'+esc(a.relative_path)+'" target="_blank" style="color:#6941f4;text-decoration:none;font-weight:600">Ver</a>';
+      } else if(a.b64){
+        h+='  <a href="data:'+(a.mimetype||'application/octet-stream')+';base64,'+a.b64+'" download="'+fname+'" style="color:#6941f4;text-decoration:none;font-weight:600">Descargar</a>';
       }
       h+='</div>';
     }
+    h+='  <div style="margin-top:8px;font-size:11px;color:#15803d">✓ Estos archivos se incluirán en el <b>PDF descargable</b> y como <b>adjuntos en el correo</b>.</div>';
     h+='  </div>';
   }
   h+='</div>';
@@ -4313,38 +4434,41 @@ function descargarPDF(){
   var btn=document.getElementById('btn-pdf');
   var token=window.location.pathname.split('/').pop();
   if(btn){ btn.disabled=true; btn.innerHTML='&#8987; Generando PDF...'; }
-  // Intentar GET primero (rápido si token está en DB), fallback a POST con DATA si 404 (Vercel efímero)
-  fetch('/download/credit-pdf/'+encodeURIComponent(token), {method:'GET'})
-    .then(function(r){
-      if(r.ok && (r.headers.get('Content-Type')||'').indexOf('application/pdf')>=0){
-        return r.blob().then(function(blob){
-          var url=URL.createObjectURL(blob);
-          var a=document.createElement('a'); a.href=url; a.download='VerifyData_Credito_'+(DATA&&DATA.nombre?DATA.nombre.replace(/ /g,'_'):'cliente')+'.pdf';
-          document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url)}, 5000);
-          if(btn){ btn.disabled=false; btn.innerHTML='&#128196; Descargar PDF'; }
-          toast('PDF descargado','ok');
+  // Enriquecer DATA con b64 antes de enviar (sessionStorage + API)
+  _getEnrichedData(function(enriched){
+    // Intentar GET primero (rápido si token está en DB con Postgres)
+    fetch('/download/credit-pdf/'+encodeURIComponent(token), {method:'GET'})
+      .then(function(r){
+        if(r.ok && (r.headers.get('Content-Type')||'').indexOf('application/pdf')>=0){
+          return r.blob().then(function(blob){
+            var url=URL.createObjectURL(blob);
+            var a=document.createElement('a'); a.href=url; a.download='VerifyData_Credito_'+(enriched&&enriched.nombre?enriched.nombre.replace(/ /g,'_'):'cliente')+'.pdf';
+            document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url)}, 5000);
+            if(btn){ btn.disabled=false; btn.innerHTML='&#128196; Descargar PDF'; }
+            toast('PDF descargado','ok');
+          });
+        }
+        // Fallback: POST con result enriquecido (Vercel efímero)
+        return fetch('/download/credit-pdf/'+encodeURIComponent(token), {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({result:enriched})
+        }).then(function(r2){
+          if(!r2.ok) return r2.text().then(function(t){ throw new Error(t.slice(0,200)); });
+          return r2.blob().then(function(blob){
+            var url=URL.createObjectURL(blob);
+            var a=document.createElement('a'); a.href=url; a.download='VerifyData_Credito_'+(enriched&&enriched.nombre?enriched.nombre.replace(/ /g,'_'):'cliente')+'.pdf';
+            document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url)}, 5000);
+            if(btn){ btn.disabled=false; btn.innerHTML='&#128196; Descargar PDF'; }
+            toast('PDF descargado','ok');
+          });
         });
-      }
-      // Fallback: POST con result (Vercel efímero)
-      return fetch('/download/credit-pdf/'+encodeURIComponent(token), {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({result:DATA})
-      }).then(function(r2){
-        if(!r2.ok) throw new Error('No se pudo generar PDF');
-        return r2.blob().then(function(blob){
-          var url=URL.createObjectURL(blob);
-          var a=document.createElement('a'); a.href=url; a.download='VerifyData_Credito_'+(DATA&&DATA.nombre?DATA.nombre.replace(/ /g,'_'):'cliente')+'.pdf';
-          document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url)}, 5000);
-          if(btn){ btn.disabled=false; btn.innerHTML='&#128196; Descargar PDF'; }
-          toast('PDF descargado','ok');
-        });
+      })
+      .catch(function(e){
+        if(btn){ btn.disabled=false; btn.innerHTML='&#10007; Error PDF'; btn.style.color='#dc2626'; }
+        toast('Error al descargar PDF: '+(e&&e.message?e.message:e),'error');
       });
-    })
-    .catch(function(e){
-      if(btn){ btn.disabled=false; btn.innerHTML='&#10007; Error PDF'; btn.style.color='#dc2626'; }
-      toast('Error al descargar PDF: '+(e&&e.message?e.message:e),'error');
-    });
+  });
 }
 
 function enviarCorreo(){
@@ -4357,8 +4481,7 @@ function enviarCorreo(){
   var extra = extraEl ? (extraEl.value||'').trim() : '';
   var emails=['darango.ccafs@gmail.com','juanmanuelarias.jmag@gmail.com'];
   if(extra){
-    // Validar email simple
-    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(extra)){
+    if(!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(extra)){
       toast('Correo adicional no válido: '+extra,'warn');
       if(extraEl){extraEl.style.borderColor='#ef4444';extraEl.focus();}
       btn.disabled=false;
@@ -4367,33 +4490,34 @@ function enviarCorreo(){
     }
     emails.push(extra);
   }
-  fetch('/api/credit/send-email',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({token:token,emails:emails,result:DATA})
-  }).then(function(r){return r.json();}).then(function(d){
-    btn.disabled=false;
-    if(d.ok){
-      var dest = (d.to && Array.isArray(d.to) && d.to.length ? d.to.join(', ') : (d.message || 'Enviado a ' + emails.join(', ')));
-      // Si el mensaje ya es "Correo enviado a X destinatarios", mostrarlo tal cual
-      if(d.message && d.message.indexOf('Correo enviado')===0){ dest = d.message; }
-      else if(d.to && Array.isArray(d.to)){ dest = 'Enviado a ' + d.to.join(', '); }
-      btn.innerHTML='&#10003; ' + dest;
-      btn.style.background='#15803d';
-      btn.style.color='#fff';
-      btn.style.borderColor='#15803d';
-      if(d.preview_html){
-        var w=window.open('','_blank','width=600,height=800');
-        w.document.write('<html><head><title>Preview Correo</title></head><body>'+d.preview_html+'</body></html>');
+  _getEnrichedData(function(enriched){
+    fetch('/api/credit/send-email',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:token,emails:emails,result:enriched})
+    }).then(function(r){return r.json();}).then(function(d){
+      btn.disabled=false;
+      if(d.ok){
+        var dest = (d.to && Array.isArray(d.to) && d.to.length ? d.to.join(', ') : (d.message || 'Enviado a ' + emails.join(', ')));
+        if(d.message && d.message.indexOf('Correo enviado')===0){ dest = d.message; }
+        else if(d.to && Array.isArray(d.to)){ dest = 'Enviado a ' + d.to.join(', '); }
+        btn.innerHTML='&#10003; ' + dest;
+        btn.style.background='#15803d';
+        btn.style.color='#fff';
+        btn.style.borderColor='#15803d';
+        if(d.preview_html){
+          var w=window.open('','_blank','width=600,height=800');
+          w.document.write('<html><head><title>Preview Correo</title></head><body>'+d.preview_html+'</body></html>');
+        }
+      }else{
+        btn.innerHTML='&#10007; Error: '+esc(d.error||'Desconocido');
+        btn.style.color='#dc2626';
       }
-    }else{
-      btn.innerHTML='&#10007; Error: '+esc(d.error||'Desconocido');
+    }).catch(function(e){
+      btn.disabled=false;
+      btn.innerHTML='&#10007; Error de red';
       btn.style.color='#dc2626';
-    }
-  }).catch(function(e){
-    btn.disabled=false;
-    btn.innerHTML='&#10007; Error de red';
-    btn.style.color='#dc2626';
+    });
   });
 }
 

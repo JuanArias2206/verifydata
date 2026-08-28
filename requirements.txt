@@ -15,3 +15,7 @@ Pillow>=10.0
 pymupdf>=1.24
 psycopg[binary,pool]>=3.1  # PostgreSQL (prod) + pool; ver db.py. Solo se
                            # importa si DATABASE_URL apunta a Postgres.
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+google-auth-httplib2>=0.1.1
+google-auth-oauthlib>=1.1.0
