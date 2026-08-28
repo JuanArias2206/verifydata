@@ -1,7 +1,6 @@
 creditos_personas
 data
 browsers
-lists
 *.db
 *.db-shm
 *.db-wal
