@@ -14,7 +14,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch, mm
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak, HRFlowable, KeepTogether
+    PageBreak, HRFlowable, KeepTogether, Image
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.graphics.shapes import Drawing, Circle, String, Line
@@ -641,7 +641,8 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                     story.append(Paragraph(f'<font color="{COLORS["warning"]}">Imagen no disponible en este entorno (archivo efímero no persistido).</font>', S['small']))
                     story.append(Spacer(1, 6))
             elif ext == ".pdf":
-                # Renderizar PDF como texto embebido y página informativa
+                # Renderizar PDF anexo: fitz → imagen embebida; fallback pypdf → texto
+                # Renderizar PDF anexo: fitz → imagen embebida; fallback pypdf → texto
                 pdf_bytes_for_render = None
                 if fpath and fpath.exists():
                     try:
@@ -655,50 +656,100 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                     except Exception:
                         pdf_bytes_for_render = None
                 if pdf_bytes_for_render:
+                    _size_kb = a.get("size", 0) / 1024
+                    # 1) fitz (pymupdf) → imagen embebida
+                    _fitz_ok = False
                     try:
-                        import io as _io_pdf
-                        from pypdf import PdfReader as _PdfReader
-                        _pr = _PdfReader(_io_pdf.BytesIO(pdf_bytes_for_render))
-                        _total_pages = len(_pr.pages)
-                        _size_kb = a.get("size", 0) / 1024
+                        import fitz as _fitz, tempfile as _tf_fitz, os as _os_fitz
+                        import sys as _dbg_fitz
+                        print(f"DEBUG FITZ START: {fname}, {len(pdf_bytes_for_render)} bytes", file=_dbg_fitz.stderr, flush=True)
+                        _fitz_doc = _fitz.open(stream=pdf_bytes_for_render, filetype="pdf")
+                        _total_pages = len(_fitz_doc)
+                        print(f"DEBUG FITZ DOC: {_total_pages} pages", file=_dbg_fitz.stderr, flush=True)
                         story.append(Paragraph(
                             f'<font color="{COLORS["primary_dark"]}" size="9"><b>📄 {fname}</b> '
                             f'({_size_kb:.1f} KB — {_total_pages} página(s))</font>',
                             S['small']))
                         story.append(Spacer(1, 4))
                         for _pi in range(min(_total_pages, 3)):
-                            _page = _pr.pages[_pi]
-                            _text = (_page.extract_text() or "").strip()
-                            import sys as _dbg3
-                            print(f"DEBUG TEXT EXTRACTION: page={_pi+1} text_len={len(_text)} text={repr(_text[:100])}", file=_dbg3.stderr, flush=True)
-                            story.append(Paragraph(
-                                f'<font color="{COLORS["gray"]}" size="8">— Página {_pi+1}/{_total_pages} de {fname} —</font>',
-                                S['tiny']))
-                            story.append(Spacer(1, 2))
-                            if _text:
-                                _text_display = _text[:500].replace(chr(10), '<br>')
+                            import sys as _dbg_fitz2
+                            print(f"DEBUG FITZ LOOP: page {_pi+1}/{_total_pages}", file=_dbg_fitz2.stderr, flush=True)
+                            _page = _fitz_doc[_pi]
+                            _pix = _page.get_pixmap(dpi=130)
+                            print(f"DEBUG FITZ PIX: {_pix.width}x{_pix.height}", file=_dbg_fitz2.stderr, flush=True)
+                            _tf_img = _tf_fitz.NamedTemporaryFile(delete=False, suffix=".png")
+                            _pix.save(_tf_img.name)
+                            _tf_img.close()
+                            try:
+                                import sys as _dbg_fitz3
+                                _img = Image(_tf_img.name)
+                                _max_w, _max_h = 5.5*inch, 3.6*inch
+                                _iw, _ih = _img.imageWidth, _img.imageHeight
+                                _scale = min(_max_w/_iw if _iw else 1, _max_h/_ih if _ih else 1, 1)
+                                _img.drawWidth, _img.drawHeight = _iw*_scale, _ih*_scale
+                                _img.hAlign = 'CENTER'
+                                print(f"DEBUG FITZ IMG: {_iw}x{_ih} -> {_img.drawWidth}x{_img.drawHeight}", file=_dbg_fitz3.stderr, flush=True)
                                 story.append(Paragraph(
-                                    f'<font color="{COLORS["gray_dark"]}" size="8">{_text_display}</font>',
-                                    S['small']))
-                            else:
-                                story.append(Paragraph(
-                                    f'<font color="{COLORS["gray"]}"><i>Página {(_pi+1)} — contenido escaneado sin texto extraíble</i></font>',
-                                    S['small']))
-                            story.append(Spacer(1, 6))
-                        if _total_pages > 3:
-                            story.append(Paragraph(
-                                f'<font color="{COLORS["gray"]}" size="7">… {_total_pages-3} página(s) adicional(es) en el PDF original.</font>',
-                                S['tiny']))
-                        story.append(Paragraph(
-                            f'<font color="{COLORS["gray"]}" size="7">📎 El PDF original completo se adjunta como archivo en el correo.</font>',
-                            S['tiny']))
-                        story.append(Spacer(1, 6))
+                                    f'<font color="{COLORS["gray"]}" size="8">Página {_pi+1}/{_total_pages} — {fname}</font>',
+                                    S['tiny']))
+                                story.append(Spacer(1, 4))
+                                story.append(_img)
+                                story.append(Spacer(1, 8))
+                                _fitz_ok = True
+                                print(f"DEBUG FITZ APPENDED: story now has {len(story)} elements", file=_dbg_fitz3.stderr, flush=True)
+                            except Exception as e:
+                                import sys as _dbg_fitz4
+                                print(f"DEBUG FITZ IMAGE FAIL: {e}", file=_dbg_fitz4.stderr, flush=True)
+                            finally:
+                                try: _os_fitz.unlink(_tf_img.name)
+                                except Exception: pass
+                        _fitz_doc.close()
                     except Exception as e:
-                        story.append(Paragraph(
-                            f'<font color="{COLORS["gray"]}">📄 {fname} — PDF adjunto ({a.get("size",0)//1024} KB). '
-                            f'El archivo original se adjunta en el correo.</font>',
-                            S['small']))
-                        story.append(Spacer(1, 6))
+                        import sys as _dbg4
+                        print(f"DEBUG FITZ FAIL: {fname} error={e}", file=_dbg4.stderr, flush=True)
+                    import sys as _dbg5
+                    print(f"DEBUG _fitz_ok={_fitz_ok} for {fname}", file=_dbg5.stderr, flush=True)
+                    # 2) fallback: pypdf → texto
+                    if not _fitz_ok:
+                        try:
+                            import io as _io_pdf
+                            from pypdf import PdfReader as _PdfReader
+                            _pr = _PdfReader(_io_pdf.BytesIO(pdf_bytes_for_render))
+                            _total_pages = len(_pr.pages)
+                            story.append(Paragraph(
+                                f'<font color="{COLORS["primary_dark"]}" size="9"><b>📄 {fname}</b> '
+                                f'({_size_kb:.1f} KB — {_total_pages} página(s))</font>',
+                                S['small']))
+                            story.append(Spacer(1, 4))
+                            for _pi in range(min(_total_pages, 3)):
+                                _text = (_pr.pages[_pi].extract_text() or "").strip()
+                                story.append(Paragraph(
+                                    f'<font color="{COLORS["gray"]}" size="8">— Página {_pi+1}/{_total_pages} de {fname} —</font>',
+                                    S['tiny']))
+                                story.append(Spacer(1, 2))
+                                if _text:
+                                    story.append(Paragraph(
+                                        f'<font color="{COLORS["gray_dark"]}" size="8">{_text[:500].replace(chr(10),"<br>")}</font>',
+                                        S['small']))
+                                else:
+                                    story.append(Paragraph(
+                                        f'<font color="{COLORS["gray"]}"><i>Página {(_pi+1)} — contenido escaneado sin texto extraíble</i></font>',
+                                        S['small']))
+                                story.append(Spacer(1, 6))
+                            if _total_pages > 3:
+                                story.append(Paragraph(
+                                    f'<font color="{COLORS["gray"]}" size="7">… {_total_pages-3} página(s) adicional(es) en el PDF original.</font>',
+                                    S['tiny']))
+                        except Exception:
+                            story.append(Paragraph(
+                                f'<font color="{COLORS["gray"]}">📄 {fname} — PDF adjunto ({_size_kb:.1f} KB). '
+                                f'El archivo original se adjunta en el correo.</font>',
+                                S['small']))
+                            story.append(Spacer(1, 6))
+                    story.append(Paragraph(
+                        f'<font color="{COLORS["gray"]}" size="7">📎 El PDF original completo se adjunta como archivo en el correo.</font>',
+                        S['tiny']))
+                    story.append(Spacer(1, 6))
             else:
                 # Otros (xlsx, etc): solo listar
                 story.append(Paragraph(
