@@ -158,21 +158,30 @@ LOGIN_TEMPLATE = ui_theme.head_open("VerifyData — Iniciar Sesión") + """
   </div>
   <form method="POST" action="/login{% if next_url %}?next={{ next_url|urlencode }}{% endif %}" style="display:flex;flex-direction:column;gap:12px">
     <div>
-      <label style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Usuario</label>
-      <input name="username" type="text" placeholder="Usuario" required style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
+      <label for="login-user" style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Usuario</label>
+      <input id="login-user" name="username" type="text" placeholder="Usuario" required autofocus
+             autocomplete="username" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
     </div>
     <div>
-      <label style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Contraseña</label>
-      <input name="password" type="password" placeholder="Contraseña" required style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
+      <label for="login-pass" style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Contraseña</label>
+      <div style="position:relative">
+        <input id="login-pass" name="password" type="password" placeholder="Contraseña" required
+               autocomplete="current-password" style="width:100%;padding:10px 40px 10px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
+        <button type="button" onclick="var i=document.getElementById('login-pass');var vis=i.type==='text';i.type=vis?'password':'text';this.textContent=vis?'Ver':'Ocultar';"
+                aria-label="Mostrar u ocultar contraseña"
+                style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-faint);font-size:11px;font-weight:600;cursor:pointer;padding:4px 6px">Ver</button>
+      </div>
     </div>
     <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;margin-top:8px">Iniciar Sesión</button>
-    {% if error %}<p style="color:#dc2626;font-size:13px;text-align:center;margin-top:4px">{{ error }}</p>{% endif %}
+    {% if error %}<p role="alert" style="color:#dc2626;font-size:13px;text-align:center;margin-top:4px">{{ error }}</p>{% endif %}
   </form>
+  {% if not is_prod %}
   <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line);font-size:11px;color:var(--text-faint);line-height:1.6;text-align:center">
     <div style="font-weight:600;color:var(--text-dim);margin-bottom:4px">Credenciales de demostración</div>
     <div><b>Ejecutivo ventas:</b> naprolab / naprolab</div>
     <div><b>Jefe cartera:</b> jefecartera / jefecartera123</div>
   </div>
+  {% endif %}
 </div>
 """ + ui_theme.SHELL_CLOSE
 
@@ -189,6 +198,7 @@ def login_page():
     from flask import request, session, redirect, url_for, render_template_string
     import urllib.parse as _up
 
+    is_prod = os.environ.get("VERIFYDATA_ENV") == "production"
     next_url = request.args.get("next", "/")
     # Sanitizar next_url para evitar open redirect
     if next_url and not next_url.startswith("/"):
@@ -246,9 +256,11 @@ def login_page():
                 pass  # respetar "/"
             return redirect(next_url)
         else:
-            return render_template_string(LOGIN_TEMPLATE, error="Credenciales incorrectas", next_url=next_url)
+            return render_template_string(LOGIN_TEMPLATE, error="Credenciales incorrectas",
+                                           next_url=next_url, is_prod=is_prod)
 
-    return render_template_string(LOGIN_TEMPLATE, error=None, next_url=next_url if next_url != "/" else "")
+    return render_template_string(LOGIN_TEMPLATE, error=None,
+                                   next_url=next_url if next_url != "/" else "", is_prod=is_prod)
 
 
 @app.route("/logout", methods=["GET", "POST"])
@@ -1821,7 +1833,7 @@ var SUBJECTS = {{ subjects_json|safe }};
 
 function escH(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
 
-function toast(msg){ var t=document.createElement('div'); t.className='toast show'; t.innerHTML='<span class="dot"></span>'+msg;
+function toast(msg,type){ var t=document.createElement('div'); t.className='toast show'+(type?' '+type:''); t.innerHTML='<span class="dot"></span>'+msg;
   document.body.appendChild(t); setTimeout(function(){t.remove();},2200);}
 
 function cargarSiguienteSujeto() {
@@ -1958,7 +1970,7 @@ function ejecutarCheckIntegral() {
   var fd = new FormData(form);
   // FormData created from form already includes text fields + file inputs (with name attrs)
   CEDULA_ACTUAL = (fd.get('cedula') || '').toString().trim();
-  if (!CEDULA_ACTUAL) { toast('Ingrese una cedula o NIT'); return; }
+  if (!CEDULA_ACTUAL) { toast('Ingrese una cedula o NIT','warn'); return; }
 
   CHECK_EN_CURSO = true;
   var status = document.getElementById('rsales-status');
@@ -2435,7 +2447,7 @@ CARTERA_TEMPLATE = ui_theme.head_open("VerifyData — Cartera") + \
     </select>
   </div>
 
-  <div class="card pad" style="overflow:auto">
+  <div class="card pad table-scroll">
     <table class="car-table">
       <thead>
         <tr>
@@ -2569,6 +2581,12 @@ function verHistorial(id){
   });
 }
 function cerrarHist(){document.getElementById('hist-modal').style.display='none';document.getElementById('hist-modal').innerHTML='';}
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'){
+    var m=document.getElementById('hist-modal');
+    if(m && m.style.display!=='none') cerrarHist();
+  }
+});
 function syncSheets(){
   var btn=document.getElementById('btn-sync');
   if(btn){btn.disabled=true;btn.textContent='⏳ Sincronizando...';}
