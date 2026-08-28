@@ -98,14 +98,22 @@ app.register_blueprint(_auth.auth_bp)
 @app.before_request
 def _require_authentication():
     """Autenticación simple: user=naprolab, pass=naprolab por env vars.
-    LOGIN_DISABLED=1 desactiva auth completamente (demo)."""
-    # Verificar si auth está desactivada
+    LOGIN_DISABLED=1 desactiva auth completamente (demo) — pero en producción
+    (VERIFYDATA_ENV=production) se ignora para forzar login en el dominio principal.
+    Para demo en prod, usar VERIFYDATA_ALLOW_ANON=1 explícitamente."""
+    # Verificar si auth está desactivada — en producción se fuerza auth a menos que ALLOW_ANON esté set
     login_disabled = os.environ.get("LOGIN_DISABLED", "").lower()
-    if login_disabled in ("1", "true", "yes", "si"):
+    allow_anon = os.environ.get("VERIFYDATA_ALLOW_ANON", "").lower() in ("1", "true", "yes", "si")
+    is_prod = os.environ.get("VERIFYDATA_ENV") == "production"
+    if login_disabled in ("1", "true", "yes", "si") and (not is_prod or allow_anon):
         from flask import g
         g.user = {"email": "demo@verifydata.local",
                   "rol": "admin", "nombre": "Demo"}
         return
+    # En producción, si LOGIN_DISABLED está puesto pero sin ALLOW_ANON, lo ignoramos y exigimos login
+    if is_prod and login_disabled in ("1", "true", "yes", "si") and not allow_anon:
+        # No bypass — continuar a chequeo de sesión
+        pass
 
     # Auth simple por sesiones
     from flask import session
@@ -2283,11 +2291,48 @@ def api_credit_warm_rsales():
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/cartera")
 def cartera_page():
-    """Dashboard de cartera para Jefe Cartera: solicitudes, historial, aprobaciones."""
+    """Dashboard de cartera para Jefe Cartera: solicitudes, historial, aprobaciones.
+
+    En Vercel con SQLite (/tmp) los datos son efímeros por instancia.
+    Si la tabla está vacía, muestra un fallback con los 65 clientes del Excel BITACORA
+    (creditos_personas/BITACORA CUPOS DE CREDITO Y MAS 2026.xlsx) para que el usuario
+    vea datos de demo incluso en preview efímero. En producción con Postgres se verán
+    las solicitudes reales.
+    """
     import json
-    from db import credit_request_get_all
+    from db import credit_request_get_all, is_postgres
     solicitudes = credit_request_get_all()
-    return render_template_string(CARTERA_TEMPLATE, solicitudes_json=json.dumps(solicitudes, ensure_ascii=False, default=str))
+    is_ephemeral = not is_postgres() and os.environ.get("VERIFYDATA_ENV") == "production"
+    # Fallback a Excel si DB vacía (útil para demo en Vercel sin Postgres)
+    if not solicitudes:
+        try:
+            from excel_reader import read_all
+            excel = read_all()
+            # Tomar hasta 20 clientes del Excel como demo
+            for c in (excel.get("clientes") or [])[:20]:
+                solicitudes.append({
+                    "id": f"excel-{c.get('cedula_nit')}",
+                    "cedula": c.get("cedula_nit"),
+                    "nombre": c.get("nombre_cliente"),
+                    "tipo_solicitud": c.get("tipo_solicitud") or "SOLICITUD DE CREDITO",
+                    "monto_solicitado": c.get("monto_solicitar") or c.get("credito_aprobado") or 0,
+                    "score": 580 + (hash(c.get("cedula_nit") or "") % 120),
+                    "nivel_riesgo": "MEDIO",
+                    "estado": "pendiente",
+                    "ejecutivo": c.get("ejecutivo") or "BITACORA",
+                    "aprobado_por": "",
+                    "created_at": "2026-08-27 12:00:00",
+                    "observaciones": c.get("observaciones") or "",
+                    "_is_excel_fallback": True,
+                })
+        except Exception as e:
+            log.warning("Fallback Excel para cartera falló: %s", e)
+    return render_template_string(
+        CARTERA_TEMPLATE,
+        solicitudes_json=json.dumps(solicitudes, ensure_ascii=False, default=str),
+        is_ephemeral=is_ephemeral,
+        is_postgres=is_postgres(),
+    )
 
 
 CARTERA_TEMPLATE = ui_theme.head_open("VerifyData — Cartera") + \
@@ -2355,6 +2400,18 @@ CARTERA_TEMPLATE = ui_theme.head_open("VerifyData — Cartera") + \
     </div>
   </div>
 
+  {% if is_ephemeral %}
+  <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;gap:12px;align-items:center">
+    <div style="font-size:20px">⚠️</div>
+    <div style="font-size:13px;line-height:1.5">
+      <b>Modo demo efímero (SQLite en /tmp):</b> en Vercel sin <code>DATABASE_URL</code> los datos se pierden entre instancias.
+      {% if not is_postgres %}
+      Esta tabla muestra un <b>fallback de 20 clientes del Excel BITACORA</b> para demo. Para persistencia real, crea <b>Vercel Postgres</b> (Storage → Create) y define <code>DATABASE_URL</code> en Environment Variables (Production + Preview).
+      {% endif %}
+      <br><span style="color:#92400e">Vercel Pro da más memoria/timeout pero <b>no</b> da DB persistente — necesitas Postgres/Neon.</span>
+    </div>
+  </div>
+  {% endif %}
   <div class="kpi-mini">
     <div class="k"><div class="v" id="kpi-total">0</div><div class="l">Total</div></div>
     <div class="k"><div class="v" id="kpi-pend" style="color:#d97706">0</div><div class="l">Pendientes</div></div>
@@ -2424,7 +2481,9 @@ function renderCartera(){
     var accionBtns='';
     // Historial siempre visible
     accionBtns+='<button class="btn-sm btn-hist" onclick="verHistorial('+s.id+')">📋 Historial</button>';
-    if(IS_JEFE){
+    if(s._is_excel_fallback){
+      accionBtns='<span style="font-size:11px;color:#f59e0b">Demo Excel (solo vista)</span> <a href="/credito" class="btn-sm btn-hist" style="text-decoration:none">Evaluar →</a>';
+    } else if(IS_JEFE){
       if(s.estado==='pendiente'){
         accionBtns+='<button class="btn-sm btn-aprobar" onclick="aprobar('+s.id+')">✓ Aprobar</button>'+
                    '<button class="btn-sm btn-rechazar" onclick="rechazar('+s.id+')">✗ Rechazar</button>';
@@ -3870,7 +3929,14 @@ var DATA = {{ result_json|safe }};
 
 function $(id){return document.getElementById(id)}
 function render(){
-  var r=DATA, p=r.perfil_crediticio, ant=r.antecedentes||{}, res=r.resumen_ejecutivo, docs=p.docs||{};
+  try {
+    if(!DATA || typeof DATA !== 'object'){
+      throw new Error('Datos no disponibles (token expirado o DB efímera). Por favor genere una nueva evaluación.');
+    }
+    var r=DATA, p=r.perfil_crediticio, ant=r.antecedentes||{}, res=r.resumen_ejecutivo, docs=(p && p.docs) || {};
+    if(!p || !res){
+      throw new Error('Resultado incompleto. Intente generar el perfil de nuevo.');
+    }
   var C={'BAJO':'#15803d','MEDIO':'#d97706','ALTO':'#dc2626','CRITICO':'#991b1b'};
   var c=C[p.nivel_riesgo]||'#333';
   var ok=res.aprobado, tagBg=ok?'rgba(34,197,94,.9)':'rgba(220,38,38,.9)';
@@ -4024,6 +4090,11 @@ function render(){
   h+='</div>';
 
   $('app').innerHTML=h;
+  } catch(e){
+    var msg = (e && e.message) ? e.message : String(e);
+    document.getElementById('app').innerHTML = '<div style="padding:40px;text-align:center"><div style="font-size:48px;margin-bottom:16px">⚠️</div><h3 style="color:#b91c1c">No se pudo mostrar el resultado</h3><p style="color:#6b7280;max-width:480px;margin:12px auto;line-height:1.6">'+esc(msg)+'</p><p style="font-size:12px;color:#9ca3af">Token expirado (DB efímera en Vercel sin Postgres) o datos corruptos. Genere una nueva evaluación.</p><a href="/credito" class="btn btn-primary" style="margin-top:16px;text-decoration:none">↻ Nueva evaluación</a></div>';
+    console.error('Render error:', e);
+  }
 }
 
 function esc(s){var d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}

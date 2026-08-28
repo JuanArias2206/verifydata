@@ -1,0 +1,42 @@
+name: Revisión automática con OpenCode
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+      issues: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Auditar cambios
+        uses: anomalyco/opencode/github@latest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: anthropic/claude-sonnet-4-20250514
+          use_github_token: true
+          prompt: |
+            Revisa este Pull Request como auditor técnico.
+
+            1. Detecta bugs, regresiones y casos límite.
+            2. Revisa seguridad: autenticación, autorización,
+               validación de entradas, secretos y datos sensibles.
+            3. Confirma que no rompa TypeScript, lint, tests ni build.
+            4. Revisa impacto en rendimiento y accesibilidad.
+            5. Revisa el diff, no inventes problemas.
+            6. Reporta solo hallazgos accionables, indicando archivo,
+               línea aproximada, gravedad y solución propuesta.
+            7. Si no hay bloqueantes, responde claramente que el PR
+               puede continuar.

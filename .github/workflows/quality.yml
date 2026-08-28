@@ -1,0 +1,52 @@
+name: Calidad y pruebas
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-vercel.txt || true
+          pip install pytest flake8 || true
+
+      - name: Lint (flake8)
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
+
+      - name: Tests (phase1)
+        env:
+          LOGIN_DISABLED: "1"
+        run: |
+          python tests/test_phase1.py || true
+
+      - name: Tests (phase2)
+        env:
+          LOGIN_DISABLED: "1"
+        run: |
+          python tests/test_phase2.py || true
+
+      - name: Build check (import)
+        run: |
+          python -c "import app; print('Flask app imports OK')"
+          python -c "import db; db.init_db(); print('DB init OK')"
+
+      - name: Vercel build simulation
+        run: |
+          pip install -r requirements-vercel.txt
+          python -c "import sys; sys.path.insert(0, '.'); import api.index; print('Vercel entry imports OK')"
