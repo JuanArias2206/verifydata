@@ -1,0 +1,15 @@
+creditos_personas
+data
+browsers
+lists
+*.db
+*.db-shm
+*.db-wal
+__pycache__
+.git
+.github
+tests
+docs
+cambios disenio
+sample_report.html
+descarga de reportes

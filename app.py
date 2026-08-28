@@ -2007,7 +2007,7 @@ function ejecutarCheckIntegral() {
 
   // Timeout de red: evita que el spinner quede colgado indefinidamente.
   var controller = ('AbortController' in window) ? new AbortController() : null;
-  var abortTimer = controller ? setTimeout(function(){ controller.abort(); }, 100000) : null;
+  var abortTimer = controller ? setTimeout(function(){ controller.abort(); }, 55000) : null; // 55s < Vercel 60s
 
   function finalizar(){
     CHECK_EN_CURSO = false;
@@ -2359,20 +2359,22 @@ def cartera_page():
     # Fallback a Excel si DB vacía (útil para demo en Vercel sin Postgres)
     if not solicitudes:
         try:
-            from excel_reader import read_all
-            excel = read_all()
-            # Tomar hasta 20 clientes del Excel como demo
-            for c in (excel.get("clientes") or [])[:20]:
+            import json as _j2
+            seed_path = Path(__file__).parent / "static" / "seed_subjects.json"
+            with open(seed_path, encoding="utf-8") as _f:
+                seed = _j2.load(_f)
+            # Tomar hasta 20 clientes del seed (versionado, disponible en Vercel)
+            for c in seed[:20]:
                 solicitudes.append({
-                    "id": f"excel-{c.get('cedula_nit')}",
+                    "id": f"seed-{c.get('cedula_nit')}",
                     "cedula": c.get("cedula_nit"),
-                    "nombre": c.get("nombre_cliente"),
+                    "nombre": c.get("nombre"),
                     "tipo_solicitud": c.get("tipo_solicitud") or "SOLICITUD DE CREDITO",
                     "monto_solicitado": c.get("monto_solicitar") or c.get("credito_aprobado") or 0,
                     "score": 580 + (hash(c.get("cedula_nit") or "") % 120),
                     "nivel_riesgo": "MEDIO",
                     "estado": "pendiente",
-                    "ejecutivo": c.get("ejecutivo") or "BITACORA",
+                    "ejecutivo": c.get("ejecutivo") or "SEED",
                     "aprobado_por": "",
                     "created_at": "2026-08-27 12:00:00",
                     "observaciones": c.get("observaciones") or "",
