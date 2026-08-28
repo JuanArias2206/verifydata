@@ -12,5 +12,6 @@ reportlab>=4.0
 cryptography>=41.0
 pypdf>=4.0
 Pillow>=10.0
+pymupdf>=1.24
 psycopg[binary,pool]>=3.1  # PostgreSQL (prod) + pool; ver db.py. Solo se
                            # importa si DATABASE_URL apunta a Postgres.

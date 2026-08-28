@@ -633,10 +633,105 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                     story.append(Paragraph(f'<font color="{COLORS["warning"]}">Imagen no disponible en este entorno (archivo efímero no persistido).</font>', S['small']))
                     story.append(Spacer(1, 6))
             elif ext == ".pdf":
-                story.append(Paragraph(
-                    f'<font color="{COLORS["gray"]}">PDF adjunto — se adjunta como archivo separado en el correo. '
-                    f'Ruta: {rel or fname}</font>', S['small']))
-                story.append(Spacer(1, 6))
+                # Renderizar PDF como imágenes embebidas (cédula escaneada)
+                pdf_rendered = False
+                pdf_bytes_for_render = None
+                # Obtener bytes del PDF (disco o b64)
+                if fpath and fpath.exists():
+                    try:
+                        pdf_bytes_for_render = fpath.read_bytes()
+                    except Exception:
+                        pdf_bytes_for_render = None
+                if pdf_bytes_for_render is None and a.get("b64"):
+                    try:
+                        import base64 as _b64pdf
+                        pdf_bytes_for_render = _b64pdf.b64decode(a["b64"])
+                    except Exception:
+                        pdf_bytes_for_render = None
+                if pdf_bytes_for_render:
+                    try:
+                        # Intentar con pymupdf (fitz) - más compatible en Vercel que pdf2image/poppler
+                        import fitz  # pymupdf
+                        import tempfile as _tf2
+                        fitz_doc = fitz.open(stream=pdf_bytes_for_render, filetype="pdf")
+                        for page_idx in range(min(len(fitz_doc), 5)):  # máx 5 páginas por anexo
+                            page = fitz_doc[page_idx]
+                            # Render a 150 dpi ~ 2x
+                            pix = page.get_pixmap(dpi=150)
+                            tf_img = _tf2.NamedTemporaryFile(delete=False, suffix=".png")
+                            pix.save(tf_img.name)
+                            tf_img.close()
+                            try:
+                                img = Image(tf_img.name)
+                                max_w = 5.5 * inch
+                                max_h = 3.8 * inch
+                                iw, ih = img.imageWidth, img.imageHeight
+                                scale = min(max_w / iw if iw else 1, max_h / ih if ih else 1, 1)
+                                img.drawWidth = iw * scale
+                                img.drawHeight = ih * scale
+                                img.hAlign = 'CENTER'
+                                story.append(Paragraph(
+                                    f'<font color="{COLORS["gray"]}" size="8">Página {page_idx+1}/{len(fitz_doc)} — {fname}</font>',
+                                    S['tiny']))
+                                story.append(Spacer(1, 4))
+                                story.append(img)
+                                story.append(Spacer(1, 8))
+                                pdf_rendered = True
+                            except Exception as e:
+                                story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo incrustar página {page_idx+1}: {e}</font>', S['small']))
+                            finally:
+                                try:
+                                    import os as _os_pdf
+                                    _os_pdf.unlink(tf_img.name)
+                                except Exception:
+                                    pass
+                        fitz_doc.close()
+                    except ImportError:
+                        # fitz no disponible, fallback a texto + merge al final
+                        pass
+                    except Exception as e:
+                        story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo renderizar PDF como imagen: {e}</font>', S['small']))
+                    # Si no se pudo renderizar con fitz, intentar pdf2image
+                    if not pdf_rendered:
+                        try:
+                            from pdf2image import convert_from_bytes
+                            import tempfile as _tf3
+                            images = convert_from_bytes(pdf_bytes_for_render, dpi=100, first_page=1, last_page=2)
+                            for idx, pil_img in enumerate(images[:2]):
+                                tf_img = _tf3.NamedTemporaryFile(delete=False, suffix=".png")
+                                pil_img.save(tf_img.name, "PNG")
+                                tf_img.close()
+                                try:
+                                    img = Image(tf_img.name)
+                                    max_w = 5.5 * inch
+                                    max_h = 3.8 * inch
+                                    iw, ih = img.imageWidth, img.imageHeight
+                                    scale = min(max_w / iw if iw else 1, max_h / ih if ih else 1, 1)
+                                    img.drawWidth = iw * scale
+                                    img.drawHeight = ih * scale
+                                    img.hAlign = 'CENTER'
+                                    story.append(Paragraph(
+                                        f'<font color="{COLORS["gray"]}" size="8">Página {idx+1} — {fname}</font>',
+                                        S['tiny']))
+                                    story.append(Spacer(1, 4))
+                                    story.append(img)
+                                    story.append(Spacer(1, 8))
+                                    pdf_rendered = True
+                                except Exception as e:
+                                    story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo incrustar imagen PDF: {e}</font>', S['small']))
+                                finally:
+                                    try:
+                                        import os as _os_pdf2
+                                        _os_pdf2.unlink(tf_img.name)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                if not pdf_rendered:
+                    story.append(Paragraph(
+                        f'<font color="{COLORS["gray"]}">PDF adjunto — se adjunta como archivo separado en el correo. '
+                        f'Ruta: {rel or fname}</font>', S['small']))
+                    story.append(Spacer(1, 6))
             else:
                 # Otros (xlsx, etc): solo listar
                 story.append(Paragraph(

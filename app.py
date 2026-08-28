@@ -3709,8 +3709,15 @@ def api_credit_send_email():
         destinatarios = [destinatarios]
 
     result = _get_credit_result(token)
+    # Fallback para Vercel efímero: si token no está en DB/in-mem, usar result enviado por frontend
+    if not result and data.get("result"):
+        result = data.get("result")
+        # Si el result viene sin anexos b64 (por strip en results page), intentar recuperar b64 desde DB con token parcial si existe
+        if result and not result.get("anexos"):
+            # No hacer nada, el PDF se generará sin b64 pero con texto
+            pass
     if not result:
-        return jsonify({"ok": False, "error": "Resultado no encontrado"}), 404
+        return jsonify({"ok": False, "error": "Resultado no encontrado. Genere una nueva evaluación o el token expiró (DB efímera sin Postgres)."}), 404
 
     try:
         import smtplib
@@ -4231,7 +4238,7 @@ function enviarCorreo(){
   fetch('/api/credit/send-email',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({token:token,emails:emails})
+    body:JSON.stringify({token:token,emails:emails,result:DATA})
   }).then(function(r){return r.json();}).then(function(d){
     btn.disabled=false;
     if(d.ok){
