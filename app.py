@@ -2689,12 +2689,26 @@ def api_credit_evaluate():
 
     # RSales: intentar siempre, sin errores si no está disponible
     rsales_profile = None
+    # Optimizado: búsqueda directa por code (1 request) evita descargar 10k registros (~60s). Timeout 12s.
     try:
         from rsales_client import find_customer_in_rsales, get_rsales_client
-        cust = find_customer_in_rsales(cedula)
-        if cust:
-            rsales = get_rsales_client()
-            rsales_profile = rsales.get_customer_financial_profile(cust["code"])
+        import concurrent.futures as _cf2
+        def _fetch_rsales_fast_inner():
+            cust = find_customer_in_rsales(cedula, use_cache=False)
+            if cust and cust.get("code"):
+                try:
+                    rs = get_rsales_client()
+                    return rs.get_customer_financial_profile(cust["code"])
+                except Exception:
+                    return None
+            return None
+        with _cf2.ThreadPoolExecutor(max_workers=1) as _pool2:
+            fut = _pool2.submit(_fetch_rsales_fast_inner)
+            try:
+                rsales_profile = fut.result(timeout=12)
+            except _cf2.TimeoutError:
+                log.warning("RSales timeout para %s — se continúa sin RSales", cedula)
+                rsales_profile = None
     except Exception as e:
         log.info("RSales no disponible para %s: %s", cedula, e)
 
@@ -3255,12 +3269,26 @@ def api_credit_full_check():
         pass
 
     rsales_profile = None
+    # Optimizado: búsqueda directa por code (1 request) evita descargar 10k registros (~60s). Timeout 12s.
     try:
         from rsales_client import find_customer_in_rsales, get_rsales_client
-        cust = find_customer_in_rsales(cedula)
-        if cust:
-            rsales = get_rsales_client()
-            rsales_profile = rsales.get_customer_financial_profile(cust["code"])
+        import concurrent.futures as _cf2
+        def _fetch_rsales_fast_inner():
+            cust = find_customer_in_rsales(cedula, use_cache=False)
+            if cust and cust.get("code"):
+                try:
+                    rs = get_rsales_client()
+                    return rs.get_customer_financial_profile(cust["code"])
+                except Exception:
+                    return None
+            return None
+        with _cf2.ThreadPoolExecutor(max_workers=1) as _pool2:
+            fut = _pool2.submit(_fetch_rsales_fast_inner)
+            try:
+                rsales_profile = fut.result(timeout=12)
+            except _cf2.TimeoutError:
+                log.warning("RSales timeout para %s — se continúa sin RSales", cedula)
+                rsales_profile = None
     except Exception as e:
         log.info("RSales no disponible para %s: %s", cedula, e)
 
@@ -3938,6 +3966,27 @@ function render(){
     h+='<div class="doc-item '+(ok2?'yes':'no')+'"><div class="doc-icon">'+(ok2?'&#10003;':'&#10007;')+'</div>'+dl[dk]+'</div>';
   }
   h+='  </div>';
+  // Mostrar anexos subidos con preview/link si existen
+  var anexos = r.anexos || [];
+  if(anexos && anexos.length){
+    h+='  <div style="margin-top:12px;padding:12px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.15);border-radius:10px">';
+    h+='    <div style="font-weight:700;font-size:12px;color:#15803d;margin-bottom:8px">📎 Anexos cargados ('+anexos.length+')</div>';
+    for(var ai=0; ai<anexos.length; ai++){
+      var a=anexos[ai];
+      var fname=esc(a.original_name||a.saved_name||'archivo');
+      var sz=a.size ? (a.size/1024).toFixed(1)+' KB' : '';
+      var isImg = fname.toLowerCase().match(/\.(png|jpg|jpeg|gif|webp)$/);
+      h+='<div style="display:flex;align-items:center;gap:10px;padding:8px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;font-size:12px">';
+      h+='  <span style="font-weight:600">'+fname+' <span style="color:#9ca3af;font-weight:400">('+sz+')</span></span>';
+      if(isImg && a.b64){
+        h+='  <img src="data:'+(a.mimetype||'image/png')+';base64,'+a.b64+'" style="width:60px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #e5e7eb">'
+      } else if(a.relative_path){
+        h+='  <a href="/download/'+esc(a.relative_path)+'" target="_blank" style="color:#6941f4;text-decoration:none;font-weight:600">Ver</a>'
+      }
+      h+='</div>';
+    }
+    h+='  </div>';
+  }
   h+='</div>';
 
   // ═══ FACTORES ═══
@@ -3957,11 +4006,21 @@ function render(){
   h+='</div>';
 
   // ═══ ACCIONES ═══
-  h+='<div class="actions">';
-  h+='  <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
-  h+='  <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
-  h+='  <a href="/download/credit-pdf/'+window.location.pathname.split('/').pop()+'" class="btn btn-secondary" style="text-decoration:none;padding:12px 28px;font-size:14px" download>&#128196; Descargar PDF</a>';
-  h+='  <button class="btn btn-secondary" onclick="enviarCorreo()" id="btn-email" style="padding:12px 28px;font-size:14px">&#9993; Enviar por Correo</button>';
+  var CURRENT_ROL = "{{ current_user.rol if current_user else '' }}";
+  var IS_JEFE = (CURRENT_ROL === 'jefe_cartera' || CURRENT_ROL === 'admin');
+  h+='<div class="actions" style="flex-direction:column;align-items:center">';
+  h+='  <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">';
+  h+='    <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
+  h+='    <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
+  h+='    <a href="/download/credit-pdf/'+window.location.pathname.split('/').pop()+'" class="btn btn-secondary" style="text-decoration:none;padding:12px 28px;font-size:14px" download>&#128196; Descargar PDF</a>';
+  h+='    <button class="btn btn-secondary" onclick="enviarCorreo()" id="btn-email" style="padding:12px 28px;font-size:14px">&#9993; Enviar por Correo</button>';
+  h+='  </div>';
+  if(IS_JEFE){
+    h+='  <div style="margin-top:14px;display:flex;gap:8px;align-items:center;max-width:480px;width:100%;flex-wrap:wrap;justify-content:center">';
+    h+='    <input id="extra-email" type="email" placeholder="Correo adicional (opcional, solo Jefe/Admin)" style="flex:1;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px" oninput="this.style.borderColor=this.value && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(this.value)?'#ef4444':'var(--line)'">';
+    h+='    <span style="font-size:11px;color:var(--text-faint)">Jefe: añade destinatario extra</span>';
+    h+='  </div>';
+  }
   h+='</div>';
 
   $('app').innerHTML=h;
@@ -3977,10 +4036,23 @@ function enviarCorreo(){
   btn.disabled=true;
   btn.innerHTML='&#8987; Enviando...';
   var token=window.location.pathname.split('/').pop();
+  var extraEl=document.getElementById('extra-email');
+  var extra = extraEl ? (extraEl.value||'').trim() : '';
+  var emails=['darango.ccafs@gmail.com','juanmanuelarias.jmag@gmail.com'];
+  if(extra){
+    // Validar email simple
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(extra)){
+      alert('Correo adicional no válido: '+extra);
+      btn.disabled=false;
+      btn.innerHTML='&#9993; Enviar por Correo';
+      return;
+    }
+    emails.push(extra);
+  }
   fetch('/api/credit/send-email',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({token:token,emails:['darango.ccafs@gmail.com','juanmanuelarias.jmag@gmail.com']})
+    body:JSON.stringify({token:token,emails:emails})
   }).then(function(r){return r.json();}).then(function(d){
     btn.disabled=false;
     if(d.ok){

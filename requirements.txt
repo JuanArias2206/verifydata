@@ -8,5 +8,9 @@ pdfplumber>=0.10
 waitress>=3.0    # servidor WSGI de producción (UI + API REST multiusuario)
 msal>=1.28       # Microsoft Entra ID SSO (OAuth2 auth-code); ver auth.py
 openpyxl>=3.1        # Lectura de Excel BITACORA de crédito
+reportlab>=4.0
+cryptography>=41.0
+pypdf>=4.0
+Pillow>=10.0
 psycopg[binary,pool]>=3.1  # PostgreSQL (prod) + pool; ver db.py. Solo se
                            # importa si DATABASE_URL apunta a Postgres.

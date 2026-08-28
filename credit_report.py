@@ -772,8 +772,84 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
         ParagraphStyle('Footer3', parent=S['tiny'], alignment=TA_CENTER, textColor=_hex('gray'))
     ))
 
-    # Construir PDF
+    # Construir PDF base
     doc.build(story)
+
+    # ── Merge anexos PDF como páginas adicionales (para que la cédula en PDF aparezca) ──
+    anexos = result.get("anexos", []) or []
+    pdf_anexos = [
+        a for a in anexos
+        if (a.get("original_name") or a.get("saved_name") or "").lower().endswith(".pdf")
+        or (a.get("mimetype") or "").lower() == "application/pdf"
+    ]
+    if pdf_anexos:
+        try:
+            from pypdf import PdfReader, PdfWriter
+            import io as _io2
+            import base64 as _b64m
+            # Leer PDF base generado
+            if output_path is None:
+                buffer.seek(0)
+                base_pdf_bytes = buffer.read()
+            else:
+                with open(output_path, 'rb') as f:
+                    base_pdf_bytes = f.read()
+            writer = PdfWriter()
+            try:
+                reader = PdfReader(_io2.BytesIO(base_pdf_bytes))
+                for page in reader.pages:
+                    writer.add_page(page)
+            except Exception:
+                # Si base no es leíble, retornar base
+                if output_path is None:
+                    return base_pdf_bytes
+                else:
+                    return base_pdf_bytes
+            # Añadir cada anexo PDF como páginas nuevas
+            for a in pdf_anexos:
+                pdf_bytes = None
+                fpath = a.get("saved_path") or ""
+                rel = a.get("relative_path") or ""
+                cand = None
+                if fpath and Path(fpath).exists():
+                    cand = Path(fpath)
+                elif rel and (DATA_DIR / rel).exists():
+                    cand = DATA_DIR / rel
+                if cand and cand.exists():
+                    try:
+                        pdf_bytes = cand.read_bytes()
+                    except Exception:
+                        pdf_bytes = None
+                if pdf_bytes is None and a.get("b64"):
+                    try:
+                        pdf_bytes = _b64m.b64decode(a["b64"])
+                    except Exception:
+                        pdf_bytes = None
+                if pdf_bytes:
+                    try:
+                        r2 = PdfReader(_io2.BytesIO(pdf_bytes))
+                        for p in r2.pages:
+                            writer.add_page(p)
+                    except Exception:
+                        continue
+            out_buf = _io2.BytesIO()
+            writer.write(out_buf)
+            final_bytes = out_buf.getvalue()
+            if output_path is None:
+                return final_bytes
+            else:
+                with open(output_path, 'wb') as f:
+                    f.write(final_bytes)
+                return final_bytes
+        except Exception as e:
+            import logging
+            logging.getLogger("verifydata.credit_report").warning("Merge PDF anexos falló: %s", e, exc_info=True)
+            if output_path is None:
+                buffer.seek(0)
+                return buffer.read()
+            else:
+                with open(output_path, 'rb') as f:
+                    return f.read()
 
     if output_path is None:
         # Retornar desde memoria
