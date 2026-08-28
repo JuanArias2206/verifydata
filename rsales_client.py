@@ -529,16 +529,54 @@ def _get_customer_index() -> dict[str, dict[str, Any]]:
     return idx
 
 
-def find_customer_in_rsales(cedula_nit: str) -> dict[str, Any] | None:
-    """Busca un cliente por cédula/NIT en RSales (usa cache)."""
-    idx = _get_customer_index()
+def find_customer_in_rsales(cedula_nit: str, use_cache: bool = True) -> dict[str, Any] | None:
+    """Busca un cliente por cédula/NIT en RSales.
+
+    Intenta primero búsqueda directa por code (1 request) para evitar
+    descargar 10k registros. Solo usa el índice completo si es necesario
+    y use_cache=True.
+    """
+    cedula_nit = (cedula_nit or "").strip()
+    if not cedula_nit:
+        return None
+    # 1. Intento rápido: buscar directo por code (sin cargar índice)
+    try:
+        client = get_rsales_client()
+        # Búsqueda directa por code
+        resp = client.get_customers(code=cedula_nit, limit=10)
+        data = resp.get("data") or []
+        for c in data:
+            code = (c.get("code") or c.get("client_code") or "").strip()
+            nit = (c.get("nit") or c.get("identification") or "").strip()
+            if code == cedula_nit or nit == cedula_nit:
+                return {"code": code or cedula_nit, "name": c.get("name") or c.get("business_name",""), "city": c.get("city",""), "state": c.get("state","")}
+        # Si no hubo coincidencia exacta pero hay resultados, tomar primero cuyo code/nit contiene
+        if data:
+            for c in data:
+                code = (c.get("code") or "").strip()
+                if cedula_nit in code:
+                    return {"code": code, "name": c.get("name") or "", "city": c.get("city",""), "state": c.get("state","")}
+    except Exception:
+        pass  # fallback a índice
+
+    if not use_cache:
+        return None
+    # 2. Fallback: índice completo (cache 10 min) — solo si no se encontró directo
+    try:
+        idx = _get_customer_index()
+    except Exception:
+        return None
     if cedula_nit in idx:
         return idx[cedula_nit]
-    # También buscar por código parcial
     for key, val in idx.items():
         if key.startswith(cedula_nit):
             return val
     return None
+
+
+def find_customer_in_rsales_fast(cedula_nit: str) -> dict[str, Any] | None:
+    """Alias rápido que evita cargar índice si no es necesario (usa solo búsqueda directa)."""
+    return find_customer_in_rsales(cedula_nit, use_cache=False)
 
 
 # ── Singleton (thread-safe) ────────────────────────────────

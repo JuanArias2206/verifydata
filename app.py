@@ -62,7 +62,9 @@ if not _session_secret:
                 "SESSION_SECRET en .env para persistir sesiones).")
 app.secret_key = _session_secret
 
-DATA = Path(__file__).parent / "data"
+# DATA path: respects VERIFYDATA_ENV=production -> /tmp/data (Vercel read-only FS)
+from sources.base import get_data_path as _get_data_path
+DATA = _get_data_path()
 RESULTS_CACHE: dict[str, dict] = {}
 
 # --- Higiene del directorio de datos (deploy/producción) -------------------
@@ -146,7 +148,7 @@ LOGIN_TEMPLATE = ui_theme.head_open("VerifyData — Iniciar Sesión") + """
     <div style="font-size:24px;font-weight:800;color:var(--violet)">Verify<span style="color:var(--blue)">Data</span></div>
     <p style="color:var(--text-faint);margin:8px 0 0;font-size:13px">Iniciar sesión para continuar</p>
   </div>
-  <form method="POST" action="/login" style="display:flex;flex-direction:column;gap:12px">
+  <form method="POST" action="/login{% if next_url %}?next={{ next_url|urlencode }}{% endif %}" style="display:flex;flex-direction:column;gap:12px">
     <div>
       <label style="font-size:12px;font-weight:600;margin-bottom:4px;display:block">Usuario</label>
       <input name="username" type="text" placeholder="Usuario" required style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:14px">
@@ -158,36 +160,87 @@ LOGIN_TEMPLATE = ui_theme.head_open("VerifyData — Iniciar Sesión") + """
     <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:14px;margin-top:8px">Iniciar Sesión</button>
     {% if error %}<p style="color:#dc2626;font-size:13px;text-align:center;margin-top:4px">{{ error }}</p>{% endif %}
   </form>
+  <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line);font-size:11px;color:var(--text-faint);line-height:1.6;text-align:center">
+    <div style="font-weight:600;color:var(--text-dim);margin-bottom:4px">Credenciales de demostración</div>
+    <div><b>Ejecutivo ventas:</b> naprolab / naprolab</div>
+    <div><b>Jefe cartera:</b> jefecartera / jefecartera123</div>
+  </div>
 </div>
 """ + ui_theme.SHELL_CLOSE
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
-    """Login simple: user=naprolab, pass=naprolab por env vars."""
+    """Login con roles: Ejecutivo de ventas y Jefe de cartera.
+
+    Credenciales por env vars (con defaults demo):
+      - Ejecutivo: VERIFYDATA_USER / VERIFYDATA_PASS (default naprolab/naprolab) -> rol ejecutivo
+      - Jefe: VERIFYDATA_JEFE_USER / VERIFYDATA_JEFE_PASS (default jefecartera/jefecartera123) -> rol jefe_cartera
+      - Compatibilidad: si VERIFYDATA_JEFE_* no está seteado, jefe usa jefecartera/jefecartera123
+    """
     from flask import request, session, redirect, url_for, render_template_string
+    import urllib.parse as _up
 
+    next_url = request.args.get("next", "/")
+    # Sanitizar next_url para evitar open redirect
+    if next_url and not next_url.startswith("/"):
+        next_url = "/"
+    # Permitir next también via form hidden (si POST pierde query)
     if request.method == "POST":
-        username = request.form.get("username", "")
-        password = request.form.get("password", "")
-        next_url = request.args.get("next", "/")
+        form_next = request.form.get("next", "")
+        if form_next:
+            # tomar el de form si existe, pero sanitizar
+            if form_next.startswith("/"):
+                next_url = form_next
+        username = (request.form.get("username", "") or "").strip()
+        password = request.form.get("password", "") or ""
 
-        expected_user = os.environ.get("VERIFYDATA_USER", "naprolab")
-        expected_pass = os.environ.get("VERIFYDATA_PASS", "naprolab")
+        # Construir tabla de credenciales válidas
+        exec_user = os.environ.get("VERIFYDATA_USER", "naprolab")
+        exec_pass = os.environ.get("VERIFYDATA_PASS", "naprolab")
+        jefe_user = os.environ.get("VERIFYDATA_JEFE_USER", os.environ.get("VERIFYDATA_USER_JEFE", "jefecartera"))
+        jefe_pass = os.environ.get("VERIFYDATA_JEFE_PASS", os.environ.get("VERIFYDATA_PASS_JEFE", "jefecartera123"))
+        # Fallback extra: allow naprolab as admin as well for backward compat
+        valid = []
+        valid.append((exec_user, exec_pass, "ejecutivo", exec_user))
+        # evitar duplicado si mismo user
+        if jefe_user != exec_user:
+            valid.append((jefe_user, jefe_pass, "jefe_cartera", jefe_user))
+        # legacy admin alias: naprolab también puede entrar como admin si no es ejecutivo?
+        # mantengamos admin para naprolab si el rol ejecutivo ya cubre, pero jefe puede ser admin también
+        # Añadir alias adicional: jefe_user también valido con rol admin si es mismo? no duplicar
 
-        if username == expected_user and password == expected_pass:
+        matched = None
+        for u, p, rol, nombre in valid:
+            if username == u and password == p:
+                matched = (rol, nombre)
+                break
+
+        # También aceptar admin genérico si las env vars no coinciden pero es naprolab default?
+        # Si no matcheó y username es naprolab con pass naprolab hardcoded fallback (para no lockout)
+        if not matched and username == "naprolab" and password == "naprolab":
+            matched = ("ejecutivo", "naprolab")
+
+        if matched:
+            rol, nombre = matched
+            # Jefe cartera también tiene permisos admin para cartera
+            # pero diferenciamos rol para UI
             from flask import g
             session["verifydata_user"] = {
                 "email": f"{username}@verifydata.local",
-                "rol": "admin",
-                "nombre": username,
+                "rol": rol,
+                "nombre": nombre,
             }
             g.user = session["verifydata_user"]
+            # Redirigir según rol si next es "/" por defecto
+            if next_url == "/" and rol == "jefe_cartera":
+                # jefe va directo a cartera si entró sin next específico
+                pass  # respetar "/"
             return redirect(next_url)
         else:
-            return render_template_string(LOGIN_TEMPLATE, error="Credenciales incorrectas")
+            return render_template_string(LOGIN_TEMPLATE, error="Credenciales incorrectas", next_url=next_url)
 
-    return render_template_string(LOGIN_TEMPLATE, error=None)
+    return render_template_string(LOGIN_TEMPLATE, error=None, next_url=next_url if next_url != "/" else "")
 
 
 @app.route("/logout", methods=["GET", "POST"])
@@ -1677,32 +1730,32 @@ CREDITO_TEMPLATE = ui_theme.head_open("VerifyData — Perfil Crediticio") + \
       <div class="field-grid" style="grid-template-columns:1fr 1fr">
         <div class="field field-compact">
           <label>📄 Cédula frontal</label>
-          <input type="file" id="doc-cedula-front" accept="image/*,.pdf" onchange="previewDoc(this,'cel-front')">
+          <input type="file" id="doc-cedula-front" name="doc_cedula_frontal" accept="image/*,.pdf" onchange="previewDoc(this,'cel-front')">
           <div id="cel-front" class="doc-preview"></div>
         </div>
         <div class="field field-compact">
           <label>📄 Cédula posterior</label>
-          <input type="file" id="doc-cedula-back" accept="image/*,.pdf" onchange="previewDoc(this,'cel-back')">
+          <input type="file" id="doc-cedula-back" name="doc_cedula_posterior" accept="image/*,.pdf" onchange="previewDoc(this,'cel-back')">
           <div id="cel-back" class="doc-preview"></div>
         </div>
         <div class="field field-compact">
           <label>📄 RUT</label>
-          <input type="file" id="doc-rut" accept="image/*,.pdf" onchange="previewDoc(this,'rut-preview')">
+          <input type="file" id="doc-rut" name="doc_rut" accept="image/*,.pdf" onchange="previewDoc(this,'rut-preview')">
           <div id="rut-preview" class="doc-preview"></div>
         </div>
         <div class="field field-compact">
           <label>📄 Cámara de comercio</label>
-          <input type="file" id="doc-camara" accept="image/*,.pdf" onchange="previewDoc(this,'cam-preview')">
+          <input type="file" id="doc-camara" name="doc_camara_comercio" accept="image/*,.pdf" onchange="previewDoc(this,'cam-preview')">
           <div id="cam-preview" class="doc-preview"></div>
         </div>
         <div class="field field-compact">
           <label>📄 Estados financieros</label>
-          <input type="file" id="doc-estados" accept="image/*,.pdf,.xlsx,.xls" onchange="previewDoc(this,'ef-preview')">
+          <input type="file" id="doc-estados" name="doc_estados_financieros" accept="image/*,.pdf,.xlsx,.xls" onchange="previewDoc(this,'ef-preview')">
           <div id="ef-preview" class="doc-preview"></div>
         </div>
         <div class="field field-compact">
           <label>📄 Declaración de renta</label>
-          <input type="file" id="doc-renta" accept="image/*,.pdf" onchange="previewDoc(this,'renta-preview')">
+          <input type="file" id="doc-renta" name="doc_declaracion_renta" accept="image/*,.pdf" onchange="previewDoc(this,'renta-preview')">
           <div id="renta-preview" class="doc-preview"></div>
         </div>
       </div>
@@ -1893,11 +1946,11 @@ document.getElementById('credito-form').addEventListener('submit', function(e) {
 var CHECK_EN_CURSO = false;
 function ejecutarCheckIntegral() {
   if (CHECK_EN_CURSO) return;
-  var fd = new FormData(document.getElementById('credito-form'));
-  var data = {};
-  fd.forEach(function(v,k){ data[k] = v; });
-  CEDULA_ACTUAL = data.cedula || '';
-  if (!data.cedula) { toast('Ingrese una cedula o NIT'); return; }
+  var form = document.getElementById('credito-form');
+  var fd = new FormData(form);
+  // FormData created from form already includes text fields + file inputs (with name attrs)
+  CEDULA_ACTUAL = (fd.get('cedula') || '').toString().trim();
+  if (!CEDULA_ACTUAL) { toast('Ingrese una cedula o NIT'); return; }
 
   CHECK_EN_CURSO = true;
   var status = document.getElementById('rsales-status');
@@ -1908,13 +1961,11 @@ function ejecutarCheckIntegral() {
   var btns = document.querySelectorAll('.btn-primary');
   for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
 
-  var docs = getDocsFlags();
-  data.docs = docs;
-
+  // fd already contains the 6 file inputs (if selected) + all text fields
+  // No need to JSON-encode; send as multipart/form-data so files travel
   fetch('/api/credit/full-check', {
     method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify(data)
+    body: fd
   }).then(function(r){
     if (!r.ok) return r.text().then(function(t){ throw new Error('HTTP ' + r.status + ': ' + t.slice(0,200)); });
     return r.json();
@@ -2243,84 +2294,232 @@ CARTERA_TEMPLATE = ui_theme.head_open("VerifyData — Cartera") + \
     ui_theme.shell_open("cartera", "Cartera", "Gestión de solicitudes") + """
 <style>{% raw %}
   .car-table{width:100%;border-collapse:collapse;font-size:13px}
-  .car-table th{background:#2d3748;color:#fff;padding:10px 12px;text-align:left;font-weight:600}
-  .car-table td{padding:10px 12px;border-bottom:1px solid var(--line)}
+  .car-table th{background:#2d3748;color:#fff;padding:10px 12px;text-align:left;font-weight:600;white-space:nowrap}
+  .car-table td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
   .car-table tr:hover{background:rgba(105,65,244,.04)}
   .pill{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600}
   .pill-pendiente{background:#fef3c7;color:#92400e}
   .pill-aprobado{background:#d1fae5;color:#065f46}
   .pill-rechazado{background:#fee2e2;color:#991b1b}
-  .btn-sm{padding:6px 14px;font-size:12px;border-radius:6px;border:none;cursor:pointer;font-weight:600}
+  .btn-sm{padding:6px 12px;font-size:11px;border-radius:6px;border:none;cursor:pointer;font-weight:600;margin:2px}
   .btn-aprobar{background:#15803d;color:#fff}
+  .btn-aprobar:hover{background:#166534}
   .btn-rechazar{background:#dc2626;color:#fff}
-  .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:center;justify-content:center}
-  .modal{background:#fff;border-radius:12px;padding:24px;max-width:400px;width:90%}
+  .btn-rechazar:hover{background:#991b1b}
+  .btn-revert{background:#6b7280;color:#fff}
+  .btn-revert:hover{background:#374151}
+  .btn-hist{background:#fff;border:1px solid #d8d4ea;color:var(--text)}
+  .btn-hist:hover{background:#f4f3fa}
+  .filter-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
+  .filter-bar input,.filter-bar select{padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:#fff}
+  .filter-bar .search{flex:1;min-width:200px}
+  .role-badge{display:inline-block;padding:3px 8px;border-radius:8px;font-size:10px;font-weight:700;letter-spacing:.04em;margin-left:8px}
+  .role-badge.ejecutivo{background:rgba(62,122,249,.12);color:#1d4ed8}
+  .role-badge.jefe{background:rgba(105,65,244,.12);color:#5b21b6}
+  .role-badge.admin{background:rgba(34,197,94,.12);color:#15803d}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px}
+  .modal{background:#fff;border-radius:14px;padding:24px;max-width:520px;width:100%;max-height:80vh;overflow:auto;box-shadow:0 20px 40px rgba(0,0,0,.2)}
+  .modal h3{margin:0 0 16px;font-size:16px}
+  .hist-item{padding:12px;border-left:3px solid #e5e7eb;margin-left:8px;margin-bottom:10px;background:#f9fafb;border-radius:0 8px 8px 0}
+  .hist-item.aprobacion{border-left-color:#15803d}
+  .hist-item.rechazo{border-left-color:#dc2626}
+  .hist-item.reversion{border-left-color:#6b7280}
+  .hist-time{font-size:11px;color:#9ca3af}
+  .hist-actor{font-weight:600;font-size:13px}
+  .hist-accion{font-size:12px;color:var(--text-dim)}
+  .kpi-mini{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+  .kpi-mini .k{flex:1;min-width:100px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;text-align:center}
+  .kpi-mini .k .v{font-size:22px;font-weight:800}
+  .kpi-mini .k .l{font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.05em;margin-top:4px}
 {% endraw %}</style>
 <div class="main-content">
   <div class="hero-row" style="margin-bottom:16px">
     <div class="menu-hero">
-      <p class="eyebrow">Gestión de cartera</p>
+      <p class="eyebrow">Gestión de cartera 
+        <span class="role-badge {{ current_user.rol if current_user else 'ejecutivo' }}">{{ (current_user.rol or 'ejecutivo').upper() }}</span>
+      </p>
       <h2>Solicitudes de crédito</h2>
-      <p>Revisa, aprueba o rechaza solicitudes de clientes.</p>
+      <p>
+        {% if current_user and current_user.rol == 'jefe_cartera' %}
+        <b>Jefe de Cartera:</b> revisa el historial completo, aprueba, rechaza y revierte decisiones.
+        {% elif current_user and current_user.rol == 'ejecutivo' %}
+        <b>Ejecutivo de Ventas:</b> crea evaluaciones en <a href="/credito" style="color:var(--violet)">Perfil crediticio</a>. Aquí ves el estado de tus solicitudes.
+        {% else %}
+        Revisa, aprueba o rechaza solicitudes de clientes. Gestiona el ciclo completo.
+        {% endif %}
+      </p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-secondary btn-sm" onclick="syncSheets()" id="btn-sync">↻ Sincronizar Sheets</button>
+      <a class="btn btn-ghost btn-sm" href="/credito">+ Nueva evaluación</a>
     </div>
   </div>
 
-  <div class="card pad">
+  <div class="kpi-mini">
+    <div class="k"><div class="v" id="kpi-total">0</div><div class="l">Total</div></div>
+    <div class="k"><div class="v" id="kpi-pend" style="color:#d97706">0</div><div class="l">Pendientes</div></div>
+    <div class="k"><div class="v" id="kpi-aprob" style="color:#15803d">0</div><div class="l">Aprobadas</div></div>
+    <div class="k"><div class="v" id="kpi-rech" style="color:#b91c1c">0</div><div class="l">Rechazadas</div></div>
+  </div>
+
+  <div class="filter-bar">
+    <input class="search" id="f-search" placeholder="Buscar por nombre, cédula, ejecutivo..." oninput="renderCartera()">
+    <select id="f-estado" onchange="renderCartera()">
+      <option value="">Todos los estados</option>
+      <option value="pendiente">Pendiente</option>
+      <option value="aprobado">Aprobado</option>
+      <option value="rechazado">Rechazado</option>
+    </select>
+    <select id="f-tipo" onchange="renderCartera()">
+      <option value="">Todos los tipos</option>
+      <option value="SOLICITUD DE CREDITO">Solicitud de crédito</option>
+      <option value="AUMENTO DE CUPO">Aumento de cupo</option>
+      <option value="TRASLADO DE CUPO">Traslado de cupo</option>
+    </select>
+  </div>
+
+  <div class="card pad" style="overflow:auto">
     <table class="car-table">
       <thead>
         <tr>
           <th>ID</th><th>Cliente</th><th>CC</th><th>Tipo</th>
-          <th>Monto</th><th>Score</th><th>Estado</th><th>Fecha</th><th>Acciones</th>
+          <th>Monto</th><th>Score</th><th>Estado</th><th>Ejecutivo</th><th>Fecha</th><th>Acciones</th>
         </tr>
       </thead>
       <tbody id="car-body"></tbody>
     </table>
   </div>
+  <div id="hist-modal" style="display:none"></div>
 </div>
 <script>
 var SOLICITUDES = {{ solicitudes_json|safe }};
+var CURRENT_ROL = "{{ current_user.rol if current_user else '' }}";
+var IS_JEFE = (CURRENT_ROL === 'jefe_cartera' || CURRENT_ROL === 'admin');
 function escH(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 function renderCartera(){
+  var q=(document.getElementById('f-search').value||'').toUpperCase().trim();
+  var fe=document.getElementById('f-estado').value;
+  var ft=document.getElementById('f-tipo').value;
+  var filtered=SOLICITUDES.filter(function(s){
+    if(fe && s.estado!==fe) return false;
+    if(ft && s.tipo_solicitud!==ft) return false;
+    if(q){
+      var hay=(s.nombre||'').toUpperCase().indexOf(q)>=0 || (s.cedula||'').indexOf(q)>=0 || (s.ejecutivo||'').toUpperCase().indexOf(q)>=0;
+      if(!hay) return false;
+    }
+    return true;
+  });
+  // KPIs
+  document.getElementById('kpi-total').textContent=SOLICITUDES.length;
+  document.getElementById('kpi-pend').textContent=SOLICITUDES.filter(function(s){return s.estado==='pendiente'}).length;
+  document.getElementById('kpi-aprob').textContent=SOLICITUDES.filter(function(s){return s.estado==='aprobado'}).length;
+  document.getElementById('kpi-rech').textContent=SOLICITUDES.filter(function(s){return s.estado==='rechazado'}).length;
+
   var html='';
-  if(!SOLICITUDES.length){html='<tr><td colspan="9" style="text-align:center;padding:20px;color:#999">No hay solicitudes</td></tr>';}
-  SOLICITUDES.forEach(function(s){
+  if(!filtered.length){html='<tr><td colspan="10" style="text-align:center;padding:20px;color:#999">No hay solicitudes con esos filtros</td></tr>';}
+  filtered.forEach(function(s){
     var pillClass='pill-pendiente';
     if(s.estado==='aprobado')pillClass='pill-aprobado';
     if(s.estado==='rechazado')pillClass='pill-rechazado';
     var accionBtns='';
-    if(s.estado==='pendiente'){
-      accionBtns='<button class="btn-sm btn-aprobar" onclick="aprobar('+s.id+')">Aprobar</button> '+
-                 '<button class="btn-sm btn-rechazar" onclick="rechazar('+s.id+')">Rechazar</button>';
+    // Historial siempre visible
+    accionBtns+='<button class="btn-sm btn-hist" onclick="verHistorial('+s.id+')">📋 Historial</button>';
+    if(IS_JEFE){
+      if(s.estado==='pendiente'){
+        accionBtns+='<button class="btn-sm btn-aprobar" onclick="aprobar('+s.id+')">✓ Aprobar</button>'+
+                   '<button class="btn-sm btn-rechazar" onclick="rechazar('+s.id+')">✗ Rechazar</button>';
+      } else {
+        // Jefe puede revertir o cambiar decisión
+        accionBtns+='<button class="btn-sm btn-revert" onclick="revertir('+s.id+')">↩ Revertir</button>';
+        if(s.estado==='aprobado'){
+          accionBtns+='<button class="btn-sm btn-rechazar" onclick="rechazar('+s.id+')">Cambiar a Rechazo</button>';
+        } else if(s.estado==='rechazado'){
+          accionBtns+='<button class="btn-sm btn-aprobar" onclick="aprobar('+s.id+')">Cambiar a Aprobado</button>';
+        }
+      }
+    } else {
+      // Ejecutivo solo ve historial; no puede cambiar estado (solo pendiente muestra info)
+      if(s.estado!=='pendiente'){
+        accionBtns+='<span style="font-size:11px;color:#9ca3af;margin-left:4px">Decisión: '+escH(s.estado)+'</span>';
+      }
     }
     html+='<tr>'+
-      '<td>'+s.id+'</td>'+
-      '<td>'+escH(s.nombre)+'</td>'+
+      '<td><b>#'+s.id+'</b></td>'+
+      '<td>'+escH(s.nombre)+'<div style="font-size:11px;color:#9ca3af">'+escH(s.observaciones||'').slice(0,40)+'</div></td>'+
       '<td>'+escH(s.cedula)+'</td>'+
-      '<td>'+escH(s.tipo_solicitud)+'</td>'+
+      '<td><span style="font-size:11px;background:#f1f0f6;padding:2px 6px;border-radius:6px">'+escH(s.tipo_solicitud)+'</span></td>'+
       '<td>$'+Number(s.monto_solicitado||0).toLocaleString('es-CO')+'</td>'+
-      '<td>'+s.score+'</td>'+
+      '<td><span style="font-weight:700;color:'+(s.score>=700?'#15803d':(s.score>=500?'#d97706':'#b91c1c'))+'">'+s.score+'</span><div style="font-size:10px;color:#9ca3af">'+escH(s.nivel_riesgo||'')+'</div></td>'+
       '<td><span class="pill '+pillClass+'">'+escH(s.estado)+'</span></td>'+
-      '<td>'+(s.created_at||'').slice(0,10)+'</td>'+
-      '<td>'+accionBtns+'</td>'+
+      '<td style="font-size:11px">'+escH(s.ejecutivo||'—')+'<div style="color:#9ca3af">'+escH(s.aprobado_por||'')+'</div></td>'+
+      '<td style="font-size:11px;white-space:nowrap">'+(s.created_at||'').slice(0,16).replace('T',' ')+'</td>'+
+      '<td style="white-space:nowrap">'+accionBtns+'</td>'+
     '</tr>';
   });
   document.getElementById('car-body').innerHTML=html;
 }
 function aprobar(id){
-  if(!confirm('¿Aprobar solicitud #'+id+'?'))return;
+  if(!confirm('¿Aprobar solicitud #'+id+'? El cliente será marcado como APROBADO.'))return;
   fetch('/api/credit/approve',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}'})
   }).then(function(r){return r.json();}).then(function(d){
-    if(d.ok){location.reload();}else{alert(d.error);}
+    if(d.ok){location.reload();}else{alert(d.error||'No autorizado — solo Jefe Cartera puede aprobar');}
   });
 }
 function rechazar(id){
-  var motivo=prompt('Motivo del rechazo:');
-  if(motivo===null)return;
+  var motivo=prompt('Motivo del rechazo (obligatorio para auditoría):');
+  if(motivo===null) return;
+  if(!motivo.trim()){alert('Debe indicar un motivo');return;}
   fetch('/api/credit/reject',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}',motivo:motivo})
   }).then(function(r){return r.json();}).then(function(d){
-    if(d.ok){location.reload();}else{alert(d.error);}
+    if(d.ok){location.reload();}else{alert(d.error||'Error');}
+  });
+}
+function revertir(id){
+  if(!confirm('¿Revertir solicitud #'+id+' a PENDIENTE? Se quitará la aprobación/rechazo anterior.'))return;
+  var motivo=prompt('Motivo de la reversión (opcional):')||'';
+  fetch('/api/credit/revert',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:id,ejecutivo:'{{ current_user.nombre if current_user else "admin" }}',motivo:motivo})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.ok){location.reload();}else{alert(d.error||'Error al revertir');}
+  });
+}
+function verHistorial(id){
+  var modal=document.getElementById('hist-modal');
+  modal.innerHTML='<div class="modal-overlay" onclick="if(event.target===this) cerrarHist()"><div class="modal"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3>📋 Historial #'+id+'</h3><button class="btn btn-ghost btn-sm" onclick="cerrarHist()">✕</button></div><div id="hist-body" style="text-align:center;padding:20px"><span class="spin"></span> Cargando...</div></div></div>';
+  modal.style.display='block';
+  fetch('/api/credit/history/'+id).then(function(r){return r.json();}).then(function(d){
+    var html='';
+    if(!d.ok){html='<div style="color:#b91c1c">'+escH(d.error||'Error')+'</div>';}
+    else if(!d.history || !d.history.length){html='<div style="color:#9ca3af;padding:20px;text-align:center">Sin historial aún. La solicitud está en estado pendiente.</div>';}
+    else {
+      d.history.forEach(function(h){
+        var cls='hist-item';
+        if((h.accion||'').indexOf('aprob')>=0) cls+=' aprobacion';
+        else if((h.accion||'').indexOf('rechaz')>=0) cls+=' rechazo';
+        else if((h.accion||'').indexOf('rever')>=0 || (h.accion||'').indexOf('pendiente')>=0) cls+=' reversion';
+        html+='<div class="'+cls+'"><div class="hist-actor">'+escH(h.ejecutivo||'—')+' <span style="font-weight:400;color:#6b7280;font-size:11px">'+escH(h.accion||'')+'</span></div>'+
+              (h.motivo?'<div class="hist-accion" style="margin-top:4px">'+escH(h.motivo)+'</div>':'')+
+              '<div class="hist-time">'+escH((h.created_at||'').slice(0,19).replace('T',' '))+'</div></div>';
+      });
+    }
+    document.getElementById('hist-body').innerHTML=html;
+  }).catch(function(e){
+    document.getElementById('hist-body').innerHTML='<div style="color:#b91c1c">Error: '+escH(e.message)+'</div>';
+  });
+}
+function cerrarHist(){document.getElementById('hist-modal').style.display='none';document.getElementById('hist-modal').innerHTML='';}
+function syncSheets(){
+  var btn=document.getElementById('btn-sync');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Sincronizando...';}
+  fetch('/api/sheets/sync',{method:'POST'}).then(function(r){return r.json();}).then(function(d){
+    if(btn){btn.disabled=false;btn.textContent='↻ Sincronizar Sheets';}
+    if(d.ok){alert('✓ Sincronizado: '+JSON.stringify(d.results||d));}
+    else {alert('Error Sheets: '+(d.error||JSON.stringify(d)));}
+  }).catch(function(e){
+    if(btn){btn.disabled=false;btn.textContent='↻ Sincronizar Sheets';}
+    alert('Error: '+e.message);
   });
 }
 renderCartera();
@@ -2330,16 +2529,25 @@ renderCartera();
 
 @app.route("/api/credit/approve", methods=["POST"])
 def api_credit_approve():
-    """Aprueba una solicitud de crédito."""
+    """Aprueba una solicitud de crédito. Solo Jefe Cartera / Admin."""
     from flask import jsonify, request, g
+    # Verificar rol
+    user = getattr(g, "user", None) or {}
+    rol = (user.get("rol") or "").lower()
+    if rol not in ("jefe_cartera", "admin", "jefe", ""):
+        # En modo demo sin login (LOGIN_DISABLED) g.user será demo admin -> permitir
+        # Si rol es ejecutivo, denegar
+        if rol == "ejecutivo":
+            return jsonify({"ok": False, "error": "Solo Jefe de Cartera puede aprobar (tu rol: ejecutivo)"}), 403
     data = request.get_json(silent=True) or {}
     request_id = data.get("id")
-    ejecutivo = data.get("ejecutivo", "")
+    ejecutivo = data.get("ejecutivo", "") or user.get("nombre", "") or "jefe"
     if not request_id:
         return jsonify({"ok": False, "error": "ID requerido"}), 400
     try:
         from db import credit_request_approve
         credit_request_approve(int(request_id), ejecutivo)
+        audit("credit_approve", user=user.get("email", ejecutivo), request_id=request_id)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -2347,17 +2555,68 @@ def api_credit_approve():
 
 @app.route("/api/credit/reject", methods=["POST"])
 def api_credit_reject():
-    """Rechaza una solicitud de crédito."""
-    from flask import jsonify, request
+    """Rechaza una solicitud de crédito. Solo Jefe Cartera / Admin."""
+    from flask import jsonify, request, g
+    user = getattr(g, "user", None) or {}
+    rol = (user.get("rol") or "").lower()
+    if rol == "ejecutivo":
+        return jsonify({"ok": False, "error": "Solo Jefe de Cartera puede rechazar (tu rol: ejecutivo)"}), 403
     data = request.get_json(silent=True) or {}
     request_id = data.get("id")
-    ejecutivo = data.get("ejecutivo", "")
+    ejecutivo = data.get("ejecutivo", "") or user.get("nombre", "") or "jefe"
     motivo = data.get("motivo", "Sin motivo")
     if not request_id:
         return jsonify({"ok": False, "error": "ID requerido"}), 400
     try:
         from db import credit_request_reject
         credit_request_reject(int(request_id), ejecutivo, motivo)
+        audit("credit_reject", user=user.get("email", ejecutivo), request_id=request_id, motivo=motivo)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/revert", methods=["POST"])
+def api_credit_revert():
+    """Revierte una solicitud a pendiente (quita aprobación/rechazo). Solo Jefe."""
+    from flask import jsonify, request, g
+    user = getattr(g, "user", None) or {}
+    rol = (user.get("rol") or "").lower()
+    if rol == "ejecutivo":
+        return jsonify({"ok": False, "error": "Solo Jefe de Cartera puede revertir"}), 403
+    data = request.get_json(silent=True) or {}
+    request_id = data.get("id")
+    ejecutivo = data.get("ejecutivo", "") or user.get("nombre", "") or "jefe"
+    motivo = data.get("motivo", "Revertido a pendiente")
+    if not request_id:
+        return jsonify({"ok": False, "error": "ID requerido"}), 400
+    try:
+        from db import credit_request_revert
+        credit_request_revert(int(request_id), ejecutivo, motivo)
+        audit("credit_revert", user=user.get("email", ejecutivo), request_id=request_id)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/credit/toggle", methods=["POST"])
+def api_credit_toggle():
+    """Cambia estado genérico. Solo Jefe."""
+    from flask import jsonify, request, g
+    user = getattr(g, "user", None) or {}
+    if (user.get("rol") or "") == "ejecutivo":
+        return jsonify({"ok": False, "error": "Solo Jefe de Cartera puede cambiar estado"}), 403
+    data = request.get_json(silent=True) or {}
+    request_id = data.get("id")
+    nuevo = (data.get("estado") or data.get("nuevo_estado") or "").strip().lower()
+    ejecutivo = data.get("ejecutivo", "") or user.get("nombre", "") or "jefe"
+    motivo = data.get("motivo", "")
+    if not request_id or not nuevo:
+        return jsonify({"ok": False, "error": "ID y estado requeridos"}), 400
+    try:
+        from db import credit_request_toggle
+        credit_request_toggle(int(request_id), ejecutivo, nuevo, motivo)
+        audit("credit_toggle", user=user.get("email", ejecutivo), request_id=request_id, nuevo=nuevo)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -2430,12 +2689,26 @@ def api_credit_evaluate():
 
     # RSales: intentar siempre, sin errores si no está disponible
     rsales_profile = None
+    # Optimizado: búsqueda directa por code (1 request) evita descargar 10k registros (~60s). Timeout 12s.
     try:
         from rsales_client import find_customer_in_rsales, get_rsales_client
-        cust = find_customer_in_rsales(cedula)
-        if cust:
-            rsales = get_rsales_client()
-            rsales_profile = rsales.get_customer_financial_profile(cust["code"])
+        import concurrent.futures as _cf2
+        def _fetch_rsales_fast_inner():
+            cust = find_customer_in_rsales(cedula, use_cache=False)
+            if cust and cust.get("code"):
+                try:
+                    rs = get_rsales_client()
+                    return rs.get_customer_financial_profile(cust["code"])
+                except Exception:
+                    return None
+            return None
+        with _cf2.ThreadPoolExecutor(max_workers=1) as _pool2:
+            fut = _pool2.submit(_fetch_rsales_fast_inner)
+            try:
+                rsales_profile = fut.result(timeout=12)
+            except _cf2.TimeoutError:
+                log.warning("RSales timeout para %s — se continúa sin RSales", cedula)
+                rsales_profile = None
     except Exception as e:
         log.info("RSales no disponible para %s: %s", cedula, e)
 
@@ -2799,6 +3072,76 @@ def _get_credit_result(token: str) -> dict | None:
         log.warning("No se pudo leer resultado de SQLite: %s", e)
     return None
 
+# ── Helper: guardar anexos subidos (multipart) ─────────────────────
+_CREDIT_DOCS_FIELDS = {
+    "doc_cedula_frontal": "cedula_frontal",
+    "doc_cedula_posterior": "cedula_posterior",
+    "doc_rut": "rut",
+    "doc_camara_comercio": "camara_comercio",
+    "doc_estados_financieros": "estados_financieros",
+    "doc_declaracion_renta": "declaracion_renta",
+}
+
+def _save_credit_attachments(files, token: str) -> tuple[list[dict], dict]:
+    """Guarda archivos subidos a DATA/credit_docs/<token>/ y devuelve (anexos, docs_flags)."""
+    from werkzeug.utils import secure_filename
+    anexos: list[dict] = []
+    docs_flags: dict[str, bool] = {v: False for v in _CREDIT_DOCS_FIELDS.values()}
+    if not files:
+        return anexos, docs_flags
+    base_dir = DATA / "credit_docs" / token
+    try:
+        base_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    for field, doc_key in _CREDIT_DOCS_FIELDS.items():
+        f = files.get(field)
+        if not f or not getattr(f, "filename", ""):
+            continue
+        fname = secure_filename(f.filename) or f"{field}.pdf"
+        # Evitar colisiones
+        dest = base_dir / fname
+        counter = 1
+        while dest.exists():
+            stem = dest.stem
+            dest = base_dir / f"{stem}_{counter}{dest.suffix}"
+            counter += 1
+        try:
+            f.save(str(dest))
+            stat = dest.stat()
+            docs_flags[doc_key] = True
+            try:
+                rel = dest.relative_to(DATA).as_posix()
+            except ValueError:
+                rel = str(dest)
+            # Guardar también base64 para persistencia en Vercel (DB/file-system efímero)
+            b64_data = None
+            try:
+                # Solo para imágenes y PDFs pequeños (<4MB) para no inflar DB
+                if stat.st_size < 4 * 1024 * 1024:
+                    import base64
+                    with open(dest, "rb") as fh:
+                        b64_data = base64.b64encode(fh.read()).decode("ascii")
+            except Exception:
+                b64_data = None
+            entry = {
+                "field": field,
+                "doc_key": doc_key,
+                "original_name": f.filename,
+                "saved_name": dest.name,
+                "saved_path": str(dest),
+                "relative_path": rel,
+                "size": stat.st_size,
+                "mimetype": getattr(f, "mimetype", "") or "",
+            }
+            if b64_data:
+                entry["b64"] = b64_data
+            anexos.append(entry)
+        except Exception as e:
+            log.warning("No se pudo guardar anexo %s: %s", field, e)
+    return anexos, docs_flags
+
+
 # ==============================================================
 #  CHECK INTEGRAL — Crédito + Antecedentes + OFAC + Judicial
 # ==============================================================
@@ -2811,21 +3154,44 @@ def api_credit_full_check():
       2. Búsqueda pública (OFAC, Policía, Registraduría, etc.)
       3. Score crediticio
     Retorna todo junto para la demo.
+
+    Acepta tanto JSON (legacy) como multipart/form-data con archivos adjuntos.
     """
     from flask import jsonify
     from credit_risk import build_credit_profile
 
-    data = request.get_json(silent=True) or {}
-    cedula = data.get("cedula") or data.get("cedula_nit", "")
-    nombre = data.get("nombre", "")
+    # ── Detectar modo: multipart (con archivos) vs JSON ──
+    is_multipart = request.content_type and "multipart/form-data" in request.content_type
+    if is_multipart:
+        # FormData: campos en request.form, archivos en request.files
+        form = request.form
+        files = request.files
+        def _get(k, default=""):
+            v = form.get(k, default)
+            # checkboxes: "on" => True, ausente => False
+            return v
+        data_proxy = {k: form.get(k, "") for k in form.keys()}
+        # Para booleanos, verificar presencia
+        # Cedula/nombre pueden venir como cedula o cedula_nit
+        cedula = (form.get("cedula") or form.get("cedula_nit") or "").strip()
+        nombre = (form.get("nombre") or "").strip()
+    else:
+        data_proxy = request.get_json(silent=True) or {}
+        form = None
+        files = None
+        def _get(k, default=""):
+            return data_proxy.get(k, default)
+        cedula = (data_proxy.get("cedula") or data_proxy.get("cedula_nit") or "").strip()
+        nombre = (data_proxy.get("nombre") or "").strip()
+
     if not cedula:
         return jsonify({"ok": False, "error": "Cédula/NIT requerido"}), 400
 
     results = {"cedula_nit": cedula, "nombre": nombre}
 
-    # Helper: convertir string a float seguro
+    # Helper: convertir string a float seguro (soporta "on" de checkboxes)
     def _float(v, default=0):
-        if v is None or v == "" or v == "None":
+        if v is None or v == "" or v == "None" or v == "on":
             return default
         try:
             return float(v)
@@ -2833,39 +3199,62 @@ def api_credit_full_check():
             return default
 
     def _int(v, default=0):
-        if v is None or v == "" or v == "None":
+        if v is None or v == "" or v == "None" or v == "on":
             return default
         try:
             return int(float(v))
         except (ValueError, TypeError):
             return default
 
+    def _bool(v):
+        if isinstance(v, bool):
+            return v
+        if v is None or v == "":
+            return False
+        s = str(v).lower().strip()
+        return s in ("1", "true", "yes", "si", "on", "checked")
+
     # ── 1. Perfil crediticio (RSales + Excel) ──
+    # Determinar flags de docs: priorizar archivos reales, fallback a JSON docs booleans o checkboxes
+    docs_flags: dict[str, bool] = {}
+    if is_multipart:
+        # Archivos reales determinan los flags (presencia)
+        prelim_flags = {v: bool(files.get(k) and getattr(files.get(k), "filename", "")) for k, v in _CREDIT_DOCS_FIELDS.items()}
+        docs_flags = prelim_flags
+    else:
+        raw_docs = data_proxy.get("docs")
+        if isinstance(raw_docs, dict):
+            # Legacy: client envió {cedula_frontal: true, ...}
+            docs_flags = {k: bool(v) for k, v in raw_docs.items()}
+        else:
+            # Checkboxes en JSON: presenta_mora etc handled separately; docs checkboxes separate?
+            docs_flags = {v: False for v in _CREDIT_DOCS_FIELDS.values()}
+
     excel_data = {
         "nombre_cliente": nombre,
         "cedula_nit": cedula,
-        "tipo_solicitud": data.get("tipo_solicitud", ""),
-        "credito_actual": _float(data.get("credito_actual")),
-        "monto_solicitar": _float(data.get("monto_solicitar")),
-        "cupo_inicial": _float(data.get("cupo_inicial")),
-        "ingreso_mensual": _float(data.get("ingreso_mensual")),
-        "fuente_ingreso": data.get("fuente_ingreso", ""),
-        "actividad_economica": data.get("actividad_economica", ""),
-        "promedio_compras": _float(data.get("promedio_compras")),
-        "compra_minima": _float(data.get("compra_minima")),
-        "compra_maxima": _float(data.get("compra_maxima")),
-        "numero_compras": _int(data.get("numero_compras")),
-        "ano_dato_compras": _int(data.get("ano_dato_compras"), 2026),
-        "promedio_pago_dias": _float(data.get("promedio_pago_dias")),
-        "calificacion_datacredito": _float(data.get("calificacion_datacredito")),
-        "consultas_6m_sector_real": data.get("consultas_6m", ""),
-        "presenta_mora": data.get("presenta_mora", False),
-        "presenta_cartera_castigada": data.get("presenta_cartera_castigada", False),
-        "aprobacion": data.get("aprobacion", False),
-        "observaciones": data.get("observaciones", ""),
-        "fecha_expedicion": data.get("fecha_expedicion", ""),
-        "patrimonio": _float(data.get("patrimonio")),
-        "endeudamiento": _float(data.get("endeudamiento")),
+        "tipo_solicitud": _get("tipo_solicitud", ""),
+        "credito_actual": _float(_get("credito_actual")),
+        "monto_solicitar": _float(_get("monto_solicitar")),
+        "cupo_inicial": _float(_get("cupo_inicial")),
+        "ingreso_mensual": _float(_get("ingreso_mensual")),
+        "fuente_ingreso": _get("fuente_ingreso", ""),
+        "actividad_economica": _get("actividad_economica", ""),
+        "promedio_compras": _float(_get("promedio_compras")),
+        "compra_minima": _float(_get("compra_minima")),
+        "compra_maxima": _float(_get("compra_maxima")),
+        "numero_compras": _int(_get("numero_compras")),
+        "ano_dato_compras": _int(_get("ano_dato_compras"), 2026),
+        "promedio_pago_dias": _float(_get("promedio_pago_dias")),
+        "calificacion_datacredito": _float(_get("calificacion_datacredito")),
+        "consultas_6m_sector_real": _get("consultas_6m", _get("consultas_6m_sector_real", "")),
+        "presenta_mora": _bool(_get("presenta_mora", False)),
+        "presenta_cartera_castigada": _bool(_get("presenta_cartera_castigada", False)),
+        "aprobacion": _bool(_get("aprobacion", False)),
+        "observaciones": _get("observaciones", ""),
+        "fecha_expedicion": _get("fecha_expedicion", _get("fecha_exp", "")),
+        "patrimonio": _float(_get("patrimonio")),
+        "endeudamiento": _float(_get("endeudamiento")),
     }
 
     # Auto-lookup: si el formulario no trae datos financieros, buscar en Excel
@@ -2880,12 +3269,26 @@ def api_credit_full_check():
         pass
 
     rsales_profile = None
+    # Optimizado: búsqueda directa por code (1 request) evita descargar 10k registros (~60s). Timeout 12s.
     try:
         from rsales_client import find_customer_in_rsales, get_rsales_client
-        cust = find_customer_in_rsales(cedula)
-        if cust:
-            rsales = get_rsales_client()
-            rsales_profile = rsales.get_customer_financial_profile(cust["code"])
+        import concurrent.futures as _cf2
+        def _fetch_rsales_fast_inner():
+            cust = find_customer_in_rsales(cedula, use_cache=False)
+            if cust and cust.get("code"):
+                try:
+                    rs = get_rsales_client()
+                    return rs.get_customer_financial_profile(cust["code"])
+                except Exception:
+                    return None
+            return None
+        with _cf2.ThreadPoolExecutor(max_workers=1) as _pool2:
+            fut = _pool2.submit(_fetch_rsales_fast_inner)
+            try:
+                rsales_profile = fut.result(timeout=12)
+            except _cf2.TimeoutError:
+                log.warning("RSales timeout para %s — se continúa sin RSales", cedula)
+                rsales_profile = None
     except Exception as e:
         log.info("RSales no disponible para %s: %s", cedula, e)
 
@@ -2894,7 +3297,7 @@ def api_credit_full_check():
         nombre=nombre,
         rsales_profile=rsales_profile,
         excel_data=excel_data,
-        docs=data.get("docs"),
+        docs=docs_flags,
     )
 
     results["perfil_crediticio"] = {
@@ -3029,8 +3432,70 @@ def api_credit_full_check():
     results["endeudamiento"] = excel_data.get("endeudamiento", 0)
     results["tipo_solicitud"] = excel_data.get("tipo_solicitud", "")
     results["fecha_solicitud"] = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M")
+    # ── Manejar anexos subidos (si multipart) ──
+    # Generar token primero para poder guardar archivos bajo DATA/credit_docs/<token>/
+    import secrets as _sec2
+    result_token = _sec2.token_urlsafe(16)
+    anexos: list[dict] = []
+    if is_multipart and files:
+        try:
+            anexos, saved_flags = _save_credit_attachments(files, result_token)
+            # Actualizar docs en perfil_crediticio con lo realmente guardado
+            for k, v in saved_flags.items():
+                if v:
+                    results["perfil_crediticio"]["docs"][k] = True
+            results["anexos"] = anexos
+            # También guardar anexos a nivel superior para fácil acceso
+            # Actualizar profile flags si hubo archivos nuevos (ya hecho arriba)
+        except Exception as e:
+            log.warning("Error guardando anexos para token %s: %s", result_token, e)
+            results["anexos"] = []
+    else:
+        results["anexos"] = []
 
-    result_token = _store_credit_result(results)
+    # Persistir resultado con el token ya generado (manual, no via _store_credit_result que genera otro token)
+    _CREDIT_RESULTS[result_token] = results
+    try:
+        from db import credit_result_save
+        credit_result_save(result_token, results)
+    except Exception as e:
+        log.warning("No se pudo guardar resultado en SQLite: %s", e)
+    while len(_CREDIT_RESULTS) > 100:
+        _CREDIT_RESULTS.pop(next(iter(_CREDIT_RESULTS)))
+
+    # También persistir como solicitud en credit_requests para dashboard Jefe Cartera
+    try:
+        from db import credit_request_save
+        # Verificar si ya existe solicitud con esa cédula pendiente? siempre crear nueva para demo
+        _nombre_guardar = nombre or results.get("nombre", "")
+        _ejecutivo_guardar = _get("ejecutivo", "") or (results.get("perfil_crediticio", {}).get("ejecutivo") or "")
+        # Si no hay ejecutivo, usar nombre de usuario en sesión o "ejecutivo"
+        try:
+            from flask import g as _g
+            _sess_user = getattr(_g, "user", None) or {}
+            if not _ejecutivo_guardar:
+                _ejecutivo_guardar = _sess_user.get("nombre", "") or "ejecutivo"
+        except Exception:
+            if not _ejecutivo_guardar:
+                _ejecutivo_guardar = "ejecutivo"
+        credit_request_save(
+            cedula=cedula,
+            nombre=_nombre_guardar,
+            tipo_solicitud=excel_data.get("tipo_solicitud", "SOLICITUD DE CREDITO"),
+            ejecutivo=_ejecutivo_guardar,
+            monto_solicitado=float(excel_data.get("monto_solicitar", 0) or 0),
+            credito_actual=float(excel_data.get("credito_actual", 0) or 0),
+            cupo_inicial=float(excel_data.get("cupo_inicial", 0) or 0),
+            promedio_compras=float(excel_data.get("promedio_compras", 0) or 0),
+            calificacion=float(excel_data.get("calificacion_datacredito", 0) or 0),
+            presenta_mora=bool(excel_data.get("presenta_mora")),
+            cartera_castigada=bool(excel_data.get("presenta_cartera_castigada")),
+            score=int(profile.score),
+            nivel_riesgo=profile.nivel_riesgo,
+            observaciones=excel_data.get("observaciones", ""),
+        )
+    except Exception as e:
+        log.warning("No se pudo guardar credit_request: %s", e)
 
     return jsonify({"ok": True, "result": results, "result_token": result_token})
 
@@ -3157,6 +3622,14 @@ def api_credit_send_email():
           </div>
         </div>
         """
+        # Si hay anexos, inyectar nota visible en el HTML
+        _anexos_early = result.get("anexos", []) or []
+        if _anexos_early:
+            html_body = html_body.replace(
+                '<div style="padding:16px;text-align:center;font-size:11px;color:#999">',
+                f'<div style="margin:12px 0;padding:10px;background:#f0fff4;border:1px solid #bbf7d0;border-radius:8px;font-size:12px;color:#166534">📎 Se adjuntan {len(_anexos_early)} archivo(s) original(es) además del PDF.</div><div style="padding:16px;text-align:center;font-size:11px;color:#999">',
+                1
+            )
 
         msg = MIMEMultipart("mixed")
         msg["Subject"] = f"VerifyData — Reporte {tag} — {result.get('nombre', '')}"
@@ -3166,7 +3639,7 @@ def api_credit_send_email():
         # Adjuntar HTML
         msg.attach(MIMEText(html_body, "html"))
 
-        # Adjuntar PDF
+        # Adjuntar PDF (con anexos ya incrustados si había imágenes)
         try:
             from credit_report import generate_credit_pdf
             pdf_bytes = generate_credit_pdf(result)  # genera en memoria
@@ -3180,6 +3653,55 @@ def api_credit_send_email():
             msg.attach(pdf_attachment)
         except Exception as e:
             log.warning("No se pudo generar PDF para email: %s", e)
+
+        # Adjuntar anexos originales (cada archivo subido) — con fallback b64 para Vercel
+        anexos = result.get("anexos", []) or []
+        for a in anexos:
+            try:
+                file_bytes = None
+                orig_name = a.get("original_name") or a.get("saved_name") or "anexo"
+                fpath = a.get("saved_path") or ""
+                # Intentar leer de disco primero
+                if fpath and Path(fpath).exists():
+                    with open(fpath, "rb") as fh:
+                        file_bytes = fh.read()
+                else:
+                    rel = a.get("relative_path", "")
+                    if rel:
+                        cand = DATA / rel
+                        if cand.exists():
+                            with open(cand, "rb") as fh:
+                                file_bytes = fh.read()
+                # Fallback: b64 almacenado en DB (persistencia Vercel)
+                if file_bytes is None and a.get("b64"):
+                    try:
+                        import base64 as _b64e
+                        file_bytes = _b64e.b64decode(a["b64"])
+                    except Exception:
+                        file_bytes = None
+                if file_bytes is None:
+                    continue
+                # Si no hay nombre, generar
+                from email.mime.base import MIMEBase as _MB2
+                from email import encoders as _enc2
+                import mimetypes as _mime
+                # Usar original_name para guess si fpath está vacío (b64)
+                guess_src = fpath if fpath else orig_name
+                mime, _enc = _mime.guess_type(guess_src)
+                if not mime:
+                    mime = a.get("mimetype") or "application/octet-stream"
+                maintype, subtype = mime.split("/", 1) if "/" in mime else ("application", "octet-stream")
+                part = _MB2(maintype, subtype)
+                part.set_payload(file_bytes)
+                _enc2.encode_base64(part)
+                # Nombre seguro para adjunto
+                orig = orig_name or a.get("original_name") or (Path(fpath).name if fpath else "anexo")
+                part.add_header("Content-Disposition", f"attachment; filename=\"{orig}\"")
+                msg.attach(part)
+            except Exception as e:
+                log.warning("No se pudo adjuntar anexo %s: %s", a.get("original_name"), e)
+                continue
+        # Nota de anexos ya inyectada arriba en html_body si existían
 
         # Intentar enviar (si hay SMTP configurado)
         smtp_host = os.environ.get("SMTP_HOST", "")
@@ -3444,6 +3966,27 @@ function render(){
     h+='<div class="doc-item '+(ok2?'yes':'no')+'"><div class="doc-icon">'+(ok2?'&#10003;':'&#10007;')+'</div>'+dl[dk]+'</div>';
   }
   h+='  </div>';
+  // Mostrar anexos subidos con preview/link si existen
+  var anexos = r.anexos || [];
+  if(anexos && anexos.length){
+    h+='  <div style="margin-top:12px;padding:12px;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.15);border-radius:10px">';
+    h+='    <div style="font-weight:700;font-size:12px;color:#15803d;margin-bottom:8px">📎 Anexos cargados ('+anexos.length+')</div>';
+    for(var ai=0; ai<anexos.length; ai++){
+      var a=anexos[ai];
+      var fname=esc(a.original_name||a.saved_name||'archivo');
+      var sz=a.size ? (a.size/1024).toFixed(1)+' KB' : '';
+      var isImg = fname.toLowerCase().match(/\.(png|jpg|jpeg|gif|webp)$/);
+      h+='<div style="display:flex;align-items:center;gap:10px;padding:8px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;font-size:12px">';
+      h+='  <span style="font-weight:600">'+fname+' <span style="color:#9ca3af;font-weight:400">('+sz+')</span></span>';
+      if(isImg && a.b64){
+        h+='  <img src="data:'+(a.mimetype||'image/png')+';base64,'+a.b64+'" style="width:60px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #e5e7eb">'
+      } else if(a.relative_path){
+        h+='  <a href="/download/'+esc(a.relative_path)+'" target="_blank" style="color:#6941f4;text-decoration:none;font-weight:600">Ver</a>'
+      }
+      h+='</div>';
+    }
+    h+='  </div>';
+  }
   h+='</div>';
 
   // ═══ FACTORES ═══
@@ -3463,11 +4006,21 @@ function render(){
   h+='</div>';
 
   // ═══ ACCIONES ═══
-  h+='<div class="actions">';
-  h+='  <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
-  h+='  <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
-  h+='  <a href="/download/credit-pdf/'+window.location.pathname.split('/').pop()+'" class="btn btn-secondary" style="text-decoration:none;padding:12px 28px;font-size:14px" download>&#128196; Descargar PDF</a>';
-  h+='  <button class="btn btn-secondary" onclick="enviarCorreo()" id="btn-email" style="padding:12px 28px;font-size:14px">&#9993; Enviar por Correo</button>';
+  var CURRENT_ROL = "{{ current_user.rol if current_user else '' }}";
+  var IS_JEFE = (CURRENT_ROL === 'jefe_cartera' || CURRENT_ROL === 'admin');
+  h+='<div class="actions" style="flex-direction:column;align-items:center">';
+  h+='  <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">';
+  h+='    <a href="/credito" class="btn btn-primary" style="text-decoration:none;padding:12px 28px;font-size:14px">&#8592; Nueva Evaluacion</a>';
+  h+='    <button class="btn btn-secondary" onclick="window.print()" style="padding:12px 28px;font-size:14px">&#128424; Imprimir Reporte</button>';
+  h+='    <a href="/download/credit-pdf/'+window.location.pathname.split('/').pop()+'" class="btn btn-secondary" style="text-decoration:none;padding:12px 28px;font-size:14px" download>&#128196; Descargar PDF</a>';
+  h+='    <button class="btn btn-secondary" onclick="enviarCorreo()" id="btn-email" style="padding:12px 28px;font-size:14px">&#9993; Enviar por Correo</button>';
+  h+='  </div>';
+  if(IS_JEFE){
+    h+='  <div style="margin-top:14px;display:flex;gap:8px;align-items:center;max-width:480px;width:100%;flex-wrap:wrap;justify-content:center">';
+    h+='    <input id="extra-email" type="email" placeholder="Correo adicional (opcional, solo Jefe/Admin)" style="flex:1;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px" oninput="this.style.borderColor=this.value && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(this.value)?'#ef4444':'var(--line)'">';
+    h+='    <span style="font-size:11px;color:var(--text-faint)">Jefe: añade destinatario extra</span>';
+    h+='  </div>';
+  }
   h+='</div>';
 
   $('app').innerHTML=h;
@@ -3483,10 +4036,23 @@ function enviarCorreo(){
   btn.disabled=true;
   btn.innerHTML='&#8987; Enviando...';
   var token=window.location.pathname.split('/').pop();
+  var extraEl=document.getElementById('extra-email');
+  var extra = extraEl ? (extraEl.value||'').trim() : '';
+  var emails=['darango.ccafs@gmail.com','juanmanuelarias.jmag@gmail.com'];
+  if(extra){
+    // Validar email simple
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(extra)){
+      alert('Correo adicional no válido: '+extra);
+      btn.disabled=false;
+      btn.innerHTML='&#9993; Enviar por Correo';
+      return;
+    }
+    emails.push(extra);
+  }
   fetch('/api/credit/send-email',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({token:token,emails:['darango.ccafs@gmail.com','juanmanuelarias.jmag@gmail.com']})
+    body:JSON.stringify({token:token,emails:emails})
   }).then(function(r){return r.json();}).then(function(d){
     btn.disabled=false;
     if(d.ok){

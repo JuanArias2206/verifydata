@@ -545,6 +545,105 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
             f'crediticio y facilita la aprobación.</font>',
             S['small']
         ))
+    story.append(Spacer(1, 12))
+
+    # ── Anexos reales (archivos subidos) — incrustar imágenes / listar PDFs ──
+    anexos = result.get("anexos", []) or []
+    if anexos:
+        story.append(Paragraph(f'ANEXOS ADJUNTOS ({len(anexos)} archivo(s) cargado(s))', S['subsection']))
+        for a in anexos:
+            fname = a.get("original_name") or a.get("saved_name") or "archivo"
+            rel = a.get("relative_path") or ""
+            fpath = None
+            try:
+                if rel:
+                    cand = DATA_DIR / rel
+                    if cand.exists():
+                        fpath = cand
+                    else:
+                        cand2 = Path(a.get("saved_path", ""))
+                        if cand2.exists():
+                            fpath = cand2
+                else:
+                    cand2 = Path(a.get("saved_path", ""))
+                    if cand2.exists():
+                        fpath = cand2
+            except Exception:
+                fpath = None
+            ext = Path(fname).suffix.lower()
+            is_image = ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+            # Fila info
+            story.append(Paragraph(
+                f'<b>{fname}</b> &nbsp;<font color="{COLORS["gray"]}">({int(a.get("size",0))/1024:.1f} KB'
+                f'{" — "+a.get("mimetype","") if a.get("mimetype") else ""})</font>',
+                S['small']))
+            if is_image:
+                # Intentar fuente física primero, luego b64 (persistencia Vercel)
+                img_source = None
+                tmp_to_clean = None
+                if fpath and fpath.exists():
+                    img_source = str(fpath)
+                elif a.get("b64"):
+                    try:
+                        import base64 as _b64
+                        import tempfile as _tf
+                        raw = _b64.b64decode(a["b64"])
+                        suffix = ext or ".jpg"
+                        tf = _tf.NamedTemporaryFile(delete=False, suffix=suffix)
+                        tf.write(raw)
+                        tf.close()
+                        img_source = tf.name
+                        tmp_to_clean = tf.name
+                    except Exception as e:
+                        story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo decodificar imagen b64: {e}</font>', S['small']))
+                        story.append(Spacer(1, 6))
+                        img_source = None
+                if img_source:
+                    try:
+                        # Escalar imagen para que quepa en página sin desbordar
+                        img = Image(img_source)
+                        max_w = 5.5 * inch
+                        max_h = 3.2 * inch
+                        iw, ih = img.imageWidth, img.imageHeight
+                        scale = min(max_w / iw if iw else 1, max_h / ih if ih else 1, 1)
+                        img.drawWidth = iw * scale
+                        img.drawHeight = ih * scale
+                        img.hAlign = 'CENTER'
+                        story.append(Spacer(1, 4))
+                        story.append(img)
+                        story.append(Spacer(1, 8))
+                        # Limpiar temp si se creó
+                        if tmp_to_clean:
+                            try:
+                                import os as _os2
+                                _os2.unlink(tmp_to_clean)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        story.append(Paragraph(f'<font color="{COLORS["warning"]}">No se pudo incrustar imagen: {e}</font>', S['small']))
+                        story.append(Spacer(1, 6))
+                        if tmp_to_clean:
+                            try:
+                                import os as _os3
+                                _os3.unlink(tmp_to_clean)
+                            except Exception:
+                                pass
+                elif not fpath:
+                    # Sin archivo y sin b64
+                    story.append(Paragraph(f'<font color="{COLORS["warning"]}">Imagen no disponible en este entorno (archivo efímero no persistido).</font>', S['small']))
+                    story.append(Spacer(1, 6))
+            elif ext == ".pdf":
+                story.append(Paragraph(
+                    f'<font color="{COLORS["gray"]}">PDF adjunto — se adjunta como archivo separado en el correo. '
+                    f'Ruta: {rel or fname}</font>', S['small']))
+                story.append(Spacer(1, 6))
+            else:
+                # Otros (xlsx, etc): solo listar
+                story.append(Paragraph(
+                    f'<font color="{COLORS["gray"]}">Archivo adjunto: {rel or fname}</font>', S['small']))
+                story.append(Spacer(1, 6))
+        story.append(Spacer(1, 4))
+
     story.append(Spacer(1, 16))
 
     # Factores
@@ -673,8 +772,84 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
         ParagraphStyle('Footer3', parent=S['tiny'], alignment=TA_CENTER, textColor=_hex('gray'))
     ))
 
-    # Construir PDF
+    # Construir PDF base
     doc.build(story)
+
+    # ── Merge anexos PDF como páginas adicionales (para que la cédula en PDF aparezca) ──
+    anexos = result.get("anexos", []) or []
+    pdf_anexos = [
+        a for a in anexos
+        if (a.get("original_name") or a.get("saved_name") or "").lower().endswith(".pdf")
+        or (a.get("mimetype") or "").lower() == "application/pdf"
+    ]
+    if pdf_anexos:
+        try:
+            from pypdf import PdfReader, PdfWriter
+            import io as _io2
+            import base64 as _b64m
+            # Leer PDF base generado
+            if output_path is None:
+                buffer.seek(0)
+                base_pdf_bytes = buffer.read()
+            else:
+                with open(output_path, 'rb') as f:
+                    base_pdf_bytes = f.read()
+            writer = PdfWriter()
+            try:
+                reader = PdfReader(_io2.BytesIO(base_pdf_bytes))
+                for page in reader.pages:
+                    writer.add_page(page)
+            except Exception:
+                # Si base no es leíble, retornar base
+                if output_path is None:
+                    return base_pdf_bytes
+                else:
+                    return base_pdf_bytes
+            # Añadir cada anexo PDF como páginas nuevas
+            for a in pdf_anexos:
+                pdf_bytes = None
+                fpath = a.get("saved_path") or ""
+                rel = a.get("relative_path") or ""
+                cand = None
+                if fpath and Path(fpath).exists():
+                    cand = Path(fpath)
+                elif rel and (DATA_DIR / rel).exists():
+                    cand = DATA_DIR / rel
+                if cand and cand.exists():
+                    try:
+                        pdf_bytes = cand.read_bytes()
+                    except Exception:
+                        pdf_bytes = None
+                if pdf_bytes is None and a.get("b64"):
+                    try:
+                        pdf_bytes = _b64m.b64decode(a["b64"])
+                    except Exception:
+                        pdf_bytes = None
+                if pdf_bytes:
+                    try:
+                        r2 = PdfReader(_io2.BytesIO(pdf_bytes))
+                        for p in r2.pages:
+                            writer.add_page(p)
+                    except Exception:
+                        continue
+            out_buf = _io2.BytesIO()
+            writer.write(out_buf)
+            final_bytes = out_buf.getvalue()
+            if output_path is None:
+                return final_bytes
+            else:
+                with open(output_path, 'wb') as f:
+                    f.write(final_bytes)
+                return final_bytes
+        except Exception as e:
+            import logging
+            logging.getLogger("verifydata.credit_report").warning("Merge PDF anexos falló: %s", e, exc_info=True)
+            if output_path is None:
+                buffer.seek(0)
+                return buffer.read()
+            else:
+                with open(output_path, 'rb') as f:
+                    return f.read()
 
     if output_path is None:
         # Retornar desde memoria
