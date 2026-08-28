@@ -3932,13 +3932,18 @@ def download_credit_pdf(token):
 @app.route("/credit/results/<token>")
 def credit_results_page(token):
     """Página dedicada de resultados del check integral crediticio."""
-    import json
+    import json, copy
     result = _get_credit_result(token)
     if not result:
         return render_template_string(RESULTS_404_TEMPLATE), 404
+    # Para evitar truncado de template (var DATA 64KB+ con b64 3MB), quitar b64 del JSON inline
+    # El PDF y email usan b64 desde DB, la vista solo necesita metadata
+    result_for_view = copy.deepcopy(result)
+    for a in result_for_view.get("anexos", []) or []:
+        a.pop("b64", None)
     return render_template_string(
         RESULTS_TEMPLATE,
-        result_json=json.dumps(result, ensure_ascii=False),
+        result_json=json.dumps(result_for_view, ensure_ascii=False),
         token=token,
     )
 
@@ -4183,7 +4188,7 @@ function render(){
   h+='  </div>';
   if(IS_JEFE){
     h+='  <div style="margin-top:14px;display:flex;gap:8px;align-items:center;max-width:480px;width:100%;flex-wrap:wrap;justify-content:center">';
-    h+='    <input id="extra-email" type="email" placeholder="Correo adicional (opcional, solo Jefe/Admin)" style="flex:1;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px" oninput="this.style.borderColor=this.value && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(this.value)?'#ef4444':'var(--line)'">';
+    h+='    <input id="extra-email" type="email" placeholder="Correo adicional (opcional, solo Jefe/Admin)" style="flex:1;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:13px">';
     h+='    <span style="font-size:11px;color:var(--text-faint)">Jefe: añade destinatario extra</span>';
     h+='  </div>';
   }
