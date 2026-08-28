@@ -642,7 +642,6 @@ def generate_credit_pdf(result: dict, output_path: str | None = None) -> bytes:
                     story.append(Spacer(1, 6))
             elif ext == ".pdf":
                 # Renderizar PDF anexo: fitz → imagen embebida; fallback pypdf → texto
-                # Renderizar PDF anexo: fitz → imagen embebida; fallback pypdf → texto
                 pdf_bytes_for_render = None
                 if fpath and fpath.exists():
                     try:
