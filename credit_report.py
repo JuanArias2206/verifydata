@@ -22,6 +22,14 @@ from reportlab.graphics import renderPDF
 
 ROOT = Path(__file__).parent
 
+# Datos y estáticos (respeta Vercel /tmp)
+try:
+    from sources.base import get_data_path as _rep_get_data_path
+    DATA_DIR = _rep_get_data_path()
+except Exception:
+    DATA_DIR = ROOT / "data"
+STATIC_DIR = ROOT / "static"
+
 # ═══ PALETA DE COLORES CORPORATIVA ═══
 COLORS = {
     'primary': '#4299e1',      # Azul principal
