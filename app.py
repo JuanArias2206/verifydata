@@ -3336,12 +3336,15 @@ def _save_credit_attachments(files, token: str) -> tuple[list[dict], dict]:
             # Guardar también base64 para persistencia en Vercel (DB/file-system efímero)
             b64_data = None
             try:
-                # Solo para imágenes y PDFs pequeños (<4MB) para no inflar DB
-                if stat.st_size < 4 * 1024 * 1024:
+                # Limite aumentado a 10MB para cedulas/RUT escaneados (Vercel payload max ~4.5MB, DB soporta hasta 10MB)
+                if stat.st_size < 10 * 1024 * 1024:
                     import base64
                     with open(dest, "rb") as fh:
                         b64_data = base64.b64encode(fh.read()).decode("ascii")
-            except Exception:
+                else:
+                    log.warning("Anexo %s excede 10MB (size=%d), no se guardara b64 para email/PDF", field, stat.st_size)
+            except Exception as e:
+                log.warning("No se pudo codificar b64 para %s: %s", field, e)
                 b64_data = None
             entry = {
                 "field": field,
