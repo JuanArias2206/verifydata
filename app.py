@@ -1817,6 +1817,44 @@ var CEDULA_ACTUAL = '';
 var RSALES_DATA = null;
 var RESULTADO_ACTUAL = null;
 var SUBJECT_INDEX = 0;
+// IndexedDB helper para resultados grandes (supera quota de sessionStorage ~5MB)
+function idbPut(key, value){
+  return new Promise(function(res, rej){
+    try{
+      var req = indexedDB.open('verifydata', 1);
+      req.onupgradeneeded = function(e){ try{e.target.result.createObjectStore('store');}catch(_){} };
+      req.onsuccess = function(e){
+        var db = e.target.result;
+        try{
+          var tx = db.transaction('store','readwrite');
+          tx.objectStore('store').put(value, key);
+          tx.oncomplete = function(){ res(); };
+          tx.onerror = function(){ rej(tx.error); };
+        }catch(err){ rej(err); }
+      };
+      req.onerror = function(){ rej(req.error); };
+    }catch(err){ rej(err); }
+  });
+}
+function idbGet(key){
+  return new Promise(function(res, rej){
+    try{
+      var req = indexedDB.open('verifydata', 1);
+      req.onsuccess = function(e){
+        var db = e.target.result;
+        try{
+          if(!db.objectStoreNames.contains('store')) return res(null);
+          var tx = db.transaction('store','readonly');
+          var g = tx.objectStore('store').get(key);
+          g.onsuccess = function(){ res(g.result); };
+          g.onerror = function(){ rej(g.error); };
+        }catch(err){ rej(err); }
+      };
+      req.onerror = function(){ rej(req.error); };
+      req.onupgradeneeded = function(e){ try{e.target.result.createObjectStore('store');}catch(_){} };
+    }catch(err){ rej(err); }
+  });
+}
 
 (function(){
   fetch('/api/credit/warm-rsales').catch(function(){});
@@ -2070,13 +2108,17 @@ function ejecutarCheckIntegral() {
       RESULTADO_ACTUAL = d;
       document.getElementById('btn-descargar').style.display = 'inline-flex';
       status.innerHTML = '&#10003; Check completo — Redirigiendo...';
-      // Persistir resultado completo (con b64) en sessionStorage para que /credit/results lo recupere
-      // en Vercel efímero donde /tmp y SQLite no persisten entre lambdas.
+      // Persistir resultado completo (con b64) en sessionStorage + IndexedDB para que /credit/results lo recupere
+      // en Vercel efímero donde /tmp y SQLite no persisten entre lambdas. IndexedDB soporta >5MB.
       try{
         if(d.result && d.result_token){
-          sessionStorage.setItem('credit_result_'+d.result_token, JSON.stringify(d.result));
-          // Guardar también timestamp para limpieza
-          sessionStorage.setItem('credit_result_'+d.result_token+'_ts', String(Date.now()));
+          var _j = JSON.stringify(d.result);
+          try{ sessionStorage.setItem('credit_result_'+d.result_token, _j); sessionStorage.setItem('credit_result_'+d.result_token+'_ts', String(Date.now())); }catch(_e){}
+          idbPut('credit_result_'+d.result_token, _j).catch(function(){});
+          if(d.result.pdf_b64){
+            try{ sessionStorage.setItem('credit_pdf_'+d.result_token, d.result.pdf_b64); }catch(_){}
+            idbPut('credit_pdf_'+d.result_token, d.result.pdf_b64).catch(function(){});
+          }
         }
       }catch(e){}
       // Redirigir directo a la página de resultados
@@ -3675,6 +3717,22 @@ def api_credit_full_check():
     else:
         results["anexos"] = []
 
+    # Pre-generar PDF con anexos incrustados (mientras /tmp y b64 están disponibles en este lambda)
+    # Esto permite descarga directa vía data URL sin necesidad de segunda request ni DB persistente
+    try:
+        from credit_report import generate_credit_pdf
+        import base64 as _b64pdf
+        _pdf_bytes = generate_credit_pdf(results)
+        if _pdf_bytes and len(_pdf_bytes) > 100:
+            results["pdf_b64"] = _b64pdf.b64encode(_pdf_bytes).decode("ascii")
+            results["pdf_size"] = len(_pdf_bytes)
+            log.info("PDF pre-generado para token %s: %d bytes", result_token, len(_pdf_bytes))
+        else:
+            results["pdf_b64"] = None
+    except Exception as _e:
+        log.warning("No se pudo pre-generar PDF para token %s: %s", result_token, _e)
+        results["pdf_b64"] = None
+
     # Persistir resultado con el token ya generado (manual, no via _store_credit_result que genera otro token)
     _CREDIT_RESULTS[result_token] = results
     try:
@@ -3901,10 +3959,18 @@ def api_credit_send_email():
         # Adjuntar HTML
         msg.attach(MIMEText(html_body, "html"))
 
-        # Adjuntar PDF (con anexos ya incrustados si había imágenes)
+        # Adjuntar PDF (con anexos ya incrustados si había imágenes) - usa pdf_b64 pre-generado si existe
         try:
-            from credit_report import generate_credit_pdf
-            pdf_bytes = generate_credit_pdf(result)  # genera en memoria
+            pdf_bytes = None
+            if result.get("pdf_b64"):
+                try:
+                    import base64 as _b64pre2
+                    pdf_bytes = _b64pre2.b64decode(result["pdf_b64"])
+                except Exception:
+                    pdf_bytes = None
+            if pdf_bytes is None:
+                from credit_report import generate_credit_pdf
+                pdf_bytes = generate_credit_pdf(result)
             from email.mime.base import MIMEBase
             from email import encoders
             pdf_attachment = MIMEBase("application", "pdf")
@@ -4052,10 +4118,19 @@ def download_credit_pdf(token):
         return "Resultado no encontrado - genere una nueva evaluación (token expiró en Vercel sin Postgres)", 404
 
     try:
-        from credit_report import generate_credit_pdf
-
-        # Generar PDF en memoria
-        pdf_bytes = generate_credit_pdf(result)
+        # Si el result ya trae pdf_b64 pre-generado (de full-check), usarlo directo para evitar re-generar sin b64
+        pdf_bytes = None
+        if result.get("pdf_b64"):
+            try:
+                import base64 as _b64pre
+                pdf_bytes = _b64pre.b64decode(result["pdf_b64"])
+                log.info("Usando pdf_b64 pre-generado para token %s: %d bytes", token, len(pdf_bytes))
+            except Exception as _e:
+                log.warning("pdf_b64 corrupto para token %s: %s, regenerando", token, _e)
+                pdf_bytes = None
+        if pdf_bytes is None:
+            from credit_report import generate_credit_pdf
+            pdf_bytes = generate_credit_pdf(result)
 
         # Verificar que es un PDF válido
         if not pdf_bytes or len(pdf_bytes) < 100:
@@ -4180,72 +4255,131 @@ RESULTS_TEMPLATE = ui_theme.head_open("VerifyData — Resultado Crediticio") + \
 
 <script>
 var DATA = {{ result_json|safe }};
-// ── Enriquecer DATA.anexos con b64 desde sessionStorage (Vercel efímero) ──
+// IndexedDB helpers (supera quota 5MB de sessionStorage)
+function idbGet(key){
+  return new Promise(function(res){
+    try{
+      var req = indexedDB.open('verifydata',1);
+      req.onupgradeneeded = function(e){ try{e.target.result.createObjectStore('store');}catch(_){} };
+      req.onsuccess = function(e){
+        var db=e.target.result;
+        try{
+          if(!db.objectStoreNames.contains('store')) return res(null);
+          var tx=db.transaction('store','readonly');
+          var g=tx.objectStore('store').get(key);
+          g.onsuccess=function(){ res(g.result); };
+          g.onerror=function(){ res(null); };
+        }catch(_){ res(null); }
+      };
+      req.onerror=function(){ res(null); };
+    }catch(_){ res(null); }
+  });
+}
+function idbGetJSON(key){
+  return idbGet(key).then(function(v){
+    if(!v) return null;
+    try{ return JSON.parse(v); }catch(_){ return null; }
+  });
+}
+// ── Enriquecer DATA.anexos con b64 desde sessionStorage + IndexedDB + API ──
 (function(){
   var tk = window.location.pathname.split('/').pop();
+  function applyStored(stored){
+    if(!stored || !Array.isArray(stored.anexos)) return false;
+    var mp={}; stored.anexos.forEach(function(a){ if(a && a.b64) mp[a.original_name||a.saved_name]=a.b64; });
+    var changed=false;
+    if((!DATA.anexos || !DATA.anexos.length) && stored.anexos.length){ DATA.anexos = JSON.parse(JSON.stringify(stored.anexos)); changed=true; }
+    else {
+      (DATA.anexos||[]).forEach(function(a){
+        var k=a.original_name||a.saved_name;
+        if(!a.b64 && mp[k]){ a.b64=mp[k]; changed=true; }
+        var src = stored.anexos.find(function(s){ return (s.original_name||s.saved_name)===k; });
+        if(src){
+          if(!a.mimetype && src.mimetype) a.mimetype=src.mimetype;
+          if(!a.size && src.size) a.size=src.size;
+        }
+      });
+    }
+    if(stored.pdf_b64 && !DATA.pdf_b64){ DATA.pdf_b64 = stored.pdf_b64; DATA.pdf_size = stored.pdf_size; changed=true; }
+    return changed;
+  }
   try{
     var stored = JSON.parse(sessionStorage.getItem('credit_result_'+tk) || 'null');
-    if(stored && Array.isArray(stored.anexos)){
-      var mp={};
-      stored.anexos.forEach(function(a){ if(a && a.b64) mp[a.original_name||a.saved_name]=a.b64; });
-      // Si DATA vino sin anexos pero stored tiene, copiar
-      if((!DATA.anexos || !DATA.anexos.length) && stored.anexos.length){ DATA.anexos = JSON.parse(JSON.stringify(stored.anexos)); }
-      else {
-        (DATA.anexos||[]).forEach(function(a){
-          var k=a.original_name||a.saved_name;
-          if(!a.b64 && mp[k]) a.b64=mp[k];
-          // también copiar mimetype/size si faltan
-          var src = stored.anexos.find(function(s){ return (s.original_name||s.saved_name)===k; });
-          if(src){
-            if(!a.mimetype && src.mimetype) a.mimetype=src.mimetype;
-            if(!a.size && src.size) a.size=src.size;
-          }
-        });
-      }
-    }
+    if(applyStored(stored)){ try{ render(); }catch(_){} }
   }catch(e){}
-  // Intentar completar desde API si aún falta b64 (segundo intento async que re-renderiza)
-  var needsB64 = (DATA.anexos||[]).some(function(a){return !a.b64;});
+  // IndexedDB (async)
+  idbGetJSON('credit_result_'+tk).then(function(st2){
+    if(st2 && applyStored(st2)){ try{ render(); }catch(_){} }
+  });
+  // API fallback
+  var needsB64 = (DATA.anexos||[]).some(function(a){return !a.b64;}) || !DATA.pdf_b64;
   if(needsB64){
     fetch('/api/credit/result/'+encodeURIComponent(tk)).then(function(r){return r.json();}).then(function(j){
-      if(j && j.ok && j.result && Array.isArray(j.result.anexos)){
-        var mp2={};
-        j.result.anexos.forEach(function(a){ if(a && a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
-        var changed=false;
-        (DATA.anexos||[]).forEach(function(a){
-          var k=a.original_name||a.saved_name;
-          if(!a.b64 && mp2[k]){ a.b64=mp2[k]; changed=true; }
-        });
-        if(changed){ try{ render(); }catch(e){} }
+      if(j && j.ok && j.result){
+        var ch=false;
+        if(Array.isArray(j.result.anexos)){
+          var mp2={}; j.result.anexos.forEach(function(a){ if(a && a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
+          (DATA.anexos||[]).forEach(function(a){
+            var k=a.original_name||a.saved_name;
+            if(!a.b64 && mp2[k]){ a.b64=mp2[k]; ch=true; }
+          });
+        }
+        if(j.result.pdf_b64 && !DATA.pdf_b64){ DATA.pdf_b64=j.result.pdf_b64; DATA.pdf_size=j.result.pdf_size; ch=true; }
+        if(ch){ try{ render(); }catch(e){} }
       }
     }).catch(function(){});
   }
+  // Cargar pdf_b64 desde sessionStorage/IDB si DATA no lo tiene
+  try{
+    var pdfS = sessionStorage.getItem('credit_pdf_'+tk);
+    if(pdfS && !DATA.pdf_b64){ DATA.pdf_b64=pdfS; }
+  }catch(_){}
+  idbGet('credit_pdf_'+tk).then(function(v){ if(v && !DATA.pdf_b64){ DATA.pdf_b64=v; } });
 })();
 
 function $(id){return document.getElementById(id)}
 function _getEnrichedData(cb){
   var tk = window.location.pathname.split('/').pop();
-  var hasB64 = (DATA.anexos||[]).some(function(a){return !!a.b64;});
+  var hasB64 = (DATA.anexos||[]).some(function(a){return !!a.b64;}) || !!DATA.pdf_b64;
   if(hasB64){ cb(DATA); return; }
-  // Re-intentar sessionStorage sync
   try{
     var st = JSON.parse(sessionStorage.getItem('credit_result_'+tk)||'null');
-    if(st && st.anexos){
-      var mp={};
-      st.anexos.forEach(function(a){ if(a.b64) mp[a.original_name||a.saved_name]=a.b64; });
+    if(st){
+      var mp={}; (st.anexos||[]).forEach(function(a){ if(a.b64) mp[a.original_name||a.saved_name]=a.b64; });
       (DATA.anexos||[]).forEach(function(a){ if(!a.b64 && mp[a.original_name||a.saved_name]) a.b64=mp[a.original_name||a.saved_name]; });
-      if((DATA.anexos||[]).some(function(a){return !!a.b64;})){ cb(DATA); return; }
+      if(st.pdf_b64) DATA.pdf_b64=st.pdf_b64;
+      if((DATA.anexos||[]).some(function(a){return !!a.b64;}) || DATA.pdf_b64){ cb(DATA); return; }
     }
   }catch(e){}
-  // Fetch API
-  fetch('/api/credit/result/'+encodeURIComponent(tk)).then(function(r){return r.json();}).then(function(j){
-    if(j && j.ok && j.result && Array.isArray(j.result.anexos)){
-      var mp2={};
-      j.result.anexos.forEach(function(a){ if(a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
+  idbGetJSON('credit_result_'+tk).then(function(st2){
+    if(st2){
+      var mp2={}; (st2.anexos||[]).forEach(function(a){ if(a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
       (DATA.anexos||[]).forEach(function(a){ if(!a.b64 && mp2[a.original_name||a.saved_name]) a.b64=mp2[a.original_name||a.saved_name]; });
+      if(st2.pdf_b64) DATA.pdf_b64=st2.pdf_b64;
+      if((DATA.anexos||[]).some(function(a){return !!a.b64;}) || DATA.pdf_b64){ cb(DATA); return; }
     }
-    cb(DATA);
-  }).catch(function(){ cb(DATA); });
+    fetch('/api/credit/result/'+encodeURIComponent(tk)).then(function(r){return r.json();}).then(function(j){
+      if(j && j.ok && j.result){
+        if(Array.isArray(j.result.anexos)){
+          var mp3={}; j.result.anexos.forEach(function(a){ if(a.b64) mp3[a.original_name||a.saved_name]=a.b64; });
+          (DATA.anexos||[]).forEach(function(a){ if(!a.b64 && mp3[a.original_name||a.saved_name]) a.b64=mp3[a.original_name||a.saved_name]; });
+        }
+        if(j.result.pdf_b64) DATA.pdf_b64=j.result.pdf_b64;
+      }
+      cb(DATA);
+    }).catch(function(){ cb(DATA); });
+  }).catch(function(){
+    fetch('/api/credit/result/'+encodeURIComponent(tk)).then(function(r){return r.json();}).then(function(j){
+      if(j && j.ok && j.result){
+        if(Array.isArray(j.result.anexos)){
+          var mp3={}; j.result.anexos.forEach(function(a){ if(a.b64) mp3[a.original_name||a.saved_name]=a.b64; });
+          (DATA.anexos||[]).forEach(function(a){ if(!a.b64 && mp3[a.original_name||a.saved_name]) a.b64=mp3[a.original_name||a.saved_name]; });
+        }
+        if(j.result.pdf_b64) DATA.pdf_b64=j.result.pdf_b64;
+      }
+      cb(DATA);
+    }).catch(function(){ cb(DATA); });
+  });
 }
 function render(){
   try {
@@ -4437,8 +4571,23 @@ function descargarPDF(){
   var btn=document.getElementById('btn-pdf');
   var token=window.location.pathname.split('/').pop();
   if(btn){ btn.disabled=true; btn.innerHTML='&#8987; Generando PDF...'; }
-  // Enriquecer DATA con b64 antes de enviar (sessionStorage + API)
   _getEnrichedData(function(enriched){
+    // Si tenemos pdf_b64 pre-generado, descargar directo sin servidor (out-of-the-box, evita Vercel efímero)
+    if(enriched && enriched.pdf_b64){
+      try{
+        var b64 = enriched.pdf_b64;
+        var bin = atob(b64);
+        var bytes = new Uint8Array(bin.length);
+        for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+        var blob = new Blob([bytes], {type:'application/pdf'});
+        var url=URL.createObjectURL(blob);
+        var a=document.createElement('a'); a.href=url; a.download='VerifyData_Credito_'+(enriched.nombre?enriched.nombre.replace(/ /g,'_'):'cliente')+'.pdf';
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(url)}, 5000);
+        if(btn){ btn.disabled=false; btn.innerHTML='&#128196; Descargar PDF'; }
+        toast('PDF descargado (local)','ok');
+        return;
+      }catch(e){ /* fallback a servidor */ }
+    }
     // Intentar GET primero (rápido si token está en DB con Postgres)
     fetch('/download/credit-pdf/'+encodeURIComponent(token), {method:'GET'})
       .then(function(r){
