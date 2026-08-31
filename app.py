@@ -4643,11 +4643,26 @@ function enviarCorreo(){
     emails.push(extra);
   }
   _getEnrichedData(function(enriched){
-    fetch('/api/credit/send-email',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({token:token,emails:emails,result:enriched})
-    }).then(function(r){return r.json();}).then(function(d){
+    // Para evitar payload >4.5MB (Vercel limit), no enviar pdf_b64 (el servidor lo regenera) y comprimir anexos si hace falta
+    var payloadResult = enriched;
+    try{
+      // Clonar y quitar pdf_b64 (el servidor lo puede regenerar o usar el pre-generado si lo tiene en DB)
+      payloadResult = JSON.parse(JSON.stringify(enriched));
+      if(payloadResult.pdf_b64) delete payloadResult.pdf_b64;
+      if(payloadResult.pdf_size) delete payloadResult.pdf_size;
+    }catch(_){}
+    function doFetch(withResult){
+      var body = withResult ? {token:token,emails:emails,result:payloadResult} : {token:token,emails:emails};
+      return fetch('/api/credit/send-email',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body)
+      });
+    }
+    doFetch(true).then(function(r){
+      if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+': '+t.slice(0,300)); });
+      return r.json();
+    }).then(function(d){
       btn.disabled=false;
       if(d.ok){
         var dest = (d.to && Array.isArray(d.to) && d.to.length ? d.to.join(', ') : (d.message || 'Enviado a ' + emails.join(', ')));
@@ -4662,13 +4677,52 @@ function enviarCorreo(){
           w.document.write('<html><head><title>Preview Correo</title></head><body>'+d.preview_html+'</body></html>');
         }
       }else{
+        // Si el servidor dice que falta result (DB efímera sin b64), reintentar con pdf_b64
+        if(d.error && d.error.indexOf('Resultado no encontrado')>=0 && enriched.pdf_b64){
+          // Fallback: enviar con pdf_b64 incluido
+          return fetch('/api/credit/send-email',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({token:token,emails:emails,result:enriched})
+          }).then(function(r2){ return r2.json(); }).then(function(d2){
+            btn.disabled=false;
+            if(d2.ok){
+              var dest2 = d2.message || 'Enviado a ' + emails.join(', ');
+              btn.innerHTML='&#10003; ' + dest2;
+              btn.style.background='#15803d'; btn.style.color='#fff'; btn.style.borderColor='#15803d';
+            } else {
+              btn.innerHTML='&#10007; Error: '+esc(d2.error||'Desconocido');
+              btn.style.color='#dc2626';
+            }
+          });
+        }
         btn.innerHTML='&#10007; Error: '+esc(d.error||'Desconocido');
         btn.style.color='#dc2626';
       }
     }).catch(function(e){
-      btn.disabled=false;
-      btn.innerHTML='&#10007; Error de red';
-      btn.style.color='#dc2626';
+      // Error de red (posible payload grande) -> reintentar solo con token (sin result) si el servidor tiene el PDF pre-generado en DB
+      console.error('Email fetch error', e);
+      // Intentar con solo token (el servidor usará pdf_b64 de DB si existe)
+      fetch('/api/credit/send-email',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({token:token,emails:emails})
+      }).then(function(r2){ return r2.json(); }).then(function(d2){
+        btn.disabled=false;
+        if(d2.ok){
+          var dest2 = d2.message || 'Enviado a ' + emails.join(', ');
+          btn.innerHTML='&#10003; ' + dest2;
+          btn.style.background='#15803d'; btn.style.color='#fff'; btn.style.borderColor='#15803d';
+        } else {
+          btn.innerHTML='&#10007; Error: '+esc(d2.error||e.message||'Desconocido');
+          btn.style.color='#dc2626';
+        }
+      }).catch(function(e2){
+        btn.disabled=false;
+        btn.innerHTML='&#10007; Error: '+(e.message||e2.message||'Red');
+        btn.style.color='#dc2626';
+        toast('Error al enviar correo: '+(e.message||e2.message||'Red'), 'error');
+      });
     });
   });
 }
