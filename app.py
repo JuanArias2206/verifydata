@@ -4159,12 +4159,22 @@ def credit_results_page(token):
     import json, copy
     result = _get_credit_result(token)
     if not result:
-        return render_template_string(RESULTS_404_TEMPLATE), 404
+        # Vercel efímero: el token no está en este lambda (SQLite /tmp por instancia), pero el cliente
+        # tiene el result completo (con b64 y pdf_b64) en sessionStorage/IndexedDB. Servir la plantilla
+        # con DATA=null y dejar que el JS lo cargue desde el cliente. No es un 404 real.
+        log.info("credit_results_page: token %s no en DB de este lambda, sirviendo plantilla para carga cliente", token)
+        return render_template_string(
+            RESULTS_TEMPLATE,
+            result_json="null",
+            token=token,
+        )
     # Para evitar truncado de template (var DATA 64KB+ con b64 3MB), quitar b64 del JSON inline
-    # El PDF y email usan b64 desde DB, la vista solo necesita metadata
+    # El PDF y email usan b64 desde DB/IDB, la vista solo necesita metadata
     result_for_view = copy.deepcopy(result)
     for a in result_for_view.get("anexos", []) or []:
         a.pop("b64", None)
+    result_for_view.pop("pdf_b64", None)
+    result_for_view.pop("pdf_size", None)
     return render_template_string(
         RESULTS_TEMPLATE,
         result_json=json.dumps(result_for_view, ensure_ascii=False),
@@ -4255,6 +4265,10 @@ RESULTS_TEMPLATE = ui_theme.head_open("VerifyData — Resultado Crediticio") + \
 
 <script>
 var DATA = {{ result_json|safe }};
+if(!DATA || typeof DATA !== 'object'){
+  try{ var _ss = JSON.parse(sessionStorage.getItem('credit_result_'+window.location.pathname.split('/').pop()) || 'null'); if(_ss) DATA = _ss; }catch(_){}
+}
+if(!DATA) DATA = null;
 // IndexedDB helpers (supera quota 5MB de sessionStorage)
 function idbGet(key){
   return new Promise(function(res){
@@ -4285,10 +4299,25 @@ function idbGetJSON(key){
 (function(){
   var tk = window.location.pathname.split('/').pop();
   function applyStored(stored){
-    if(!stored || !Array.isArray(stored.anexos)) return false;
+    if(!stored) return false;
+    if(!DATA || typeof DATA !== 'object') DATA = {};
+    if(!Array.isArray(DATA.anexos)) DATA.anexos = [];
+    if(!Array.isArray(stored.anexos)) stored.anexos = [];
+    // Si DATA vino null/{} y stored tiene datos, copiar todo
+    if((!DATA.anexos.length) && stored.anexos.length){
+      // Copiar campos básicos si faltan
+      if(!DATA.nombre && stored.nombre) DATA.nombre = stored.nombre;
+      if(!DATA.cedula_nit && stored.cedula_nit) DATA.cedula_nit = stored.cedula_nit;
+      if(!DATA.perfil_crediticio && stored.perfil_crediticio) DATA.perfil_crediticio = stored.perfil_crediticio;
+      if(!DATA.resumen_ejecutivo && stored.resumen_ejecutivo) DATA.resumen_ejecutivo = stored.resumen_ejecutivo;
+      if(!DATA.antecedentes && stored.antecedentes) DATA.antecedentes = stored.antecedentes;
+      DATA.anexos = JSON.parse(JSON.stringify(stored.anexos));
+      if(stored.pdf_b64) { DATA.pdf_b64 = stored.pdf_b64; DATA.pdf_size = stored.pdf_size; }
+      return true;
+    }
     var mp={}; stored.anexos.forEach(function(a){ if(a && a.b64) mp[a.original_name||a.saved_name]=a.b64; });
     var changed=false;
-    if((!DATA.anexos || !DATA.anexos.length) && stored.anexos.length){ DATA.anexos = JSON.parse(JSON.stringify(stored.anexos)); changed=true; }
+    if((!DATA.anexos.length) && stored.anexos.length){ DATA.anexos = JSON.parse(JSON.stringify(stored.anexos)); changed=true; }
     else {
       (DATA.anexos||[]).forEach(function(a){
         var k=a.original_name||a.saved_name;
@@ -4301,6 +4330,9 @@ function idbGetJSON(key){
       });
     }
     if(stored.pdf_b64 && !DATA.pdf_b64){ DATA.pdf_b64 = stored.pdf_b64; DATA.pdf_size = stored.pdf_size; changed=true; }
+    // Copiar otros campos si DATA es parcial
+    if(stored.perfil_crediticio && !DATA.perfil_crediticio) { DATA.perfil_crediticio = stored.perfil_crediticio; changed=true; }
+    if(stored.resumen_ejecutivo && !DATA.resumen_ejecutivo) { DATA.resumen_ejecutivo = stored.resumen_ejecutivo; changed=true; }
     return changed;
   }
   try{
@@ -4311,20 +4343,28 @@ function idbGetJSON(key){
   idbGetJSON('credit_result_'+tk).then(function(st2){
     if(st2 && applyStored(st2)){ try{ render(); }catch(_){} }
   });
-  // API fallback
-  var needsB64 = (DATA.anexos||[]).some(function(a){return !a.b64;}) || !DATA.pdf_b64;
+  // API fallback (también cuando DATA vino null del servidor)
+  var needsB64 = !DATA || !DATA.pdf_b64 || !DATA.anexos || (DATA.anexos||[]).some(function(a){return !a.b64;});
   if(needsB64){
     fetch('/api/credit/result/'+encodeURIComponent(tk)).then(function(r){return r.json();}).then(function(j){
       if(j && j.ok && j.result){
         var ch=false;
-        if(Array.isArray(j.result.anexos)){
-          var mp2={}; j.result.anexos.forEach(function(a){ if(a && a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
-          (DATA.anexos||[]).forEach(function(a){
-            var k=a.original_name||a.saved_name;
-            if(!a.b64 && mp2[k]){ a.b64=mp2[k]; ch=true; }
-          });
+        if(!DATA || typeof DATA !== 'object') { DATA = j.result; ch=true; }
+        else {
+          if(Array.isArray(j.result.anexos)){
+            var mp2={}; j.result.anexos.forEach(function(a){ if(a && a.b64) mp2[a.original_name||a.saved_name]=a.b64; });
+            if(!DATA.anexos) DATA.anexos = [];
+            (DATA.anexos||[]).forEach(function(a){
+              var k=a.original_name||a.saved_name;
+              if(!a.b64 && mp2[k]){ a.b64=mp2[k]; ch=true; }
+            });
+            // Si DATA vino sin anexos pero API tiene, copiar
+            if((!DATA.anexos.length) && j.result.anexos.length){ DATA.anexos = JSON.parse(JSON.stringify(j.result.anexos)); ch=true; }
+          }
+          if(j.result.pdf_b64 && !DATA.pdf_b64){ DATA.pdf_b64=j.result.pdf_b64; DATA.pdf_size=j.result.pdf_size; ch=true; }
+          if(j.result.nombre && !DATA.nombre) { DATA.nombre = j.result.nombre; ch=true; }
+          if(j.result.cedula_nit && !DATA.cedula_nit) { DATA.cedula_nit = j.result.cedula_nit; ch=true; }
         }
-        if(j.result.pdf_b64 && !DATA.pdf_b64){ DATA.pdf_b64=j.result.pdf_b64; DATA.pdf_size=j.result.pdf_size; ch=true; }
         if(ch){ try{ render(); }catch(e){} }
       }
     }).catch(function(){});
@@ -4332,23 +4372,30 @@ function idbGetJSON(key){
   // Cargar pdf_b64 desde sessionStorage/IDB si DATA no lo tiene
   try{
     var pdfS = sessionStorage.getItem('credit_pdf_'+tk);
-    if(pdfS && !DATA.pdf_b64){ DATA.pdf_b64=pdfS; }
+    if(pdfS && DATA && !DATA.pdf_b64){ DATA.pdf_b64=pdfS; }
+    else if(pdfS && !DATA){ DATA = {pdf_b64: pdfS}; }
   }catch(_){}
-  idbGet('credit_pdf_'+tk).then(function(v){ if(v && !DATA.pdf_b64){ DATA.pdf_b64=v; } });
+  idbGet('credit_pdf_'+tk).then(function(v){ if(v && DATA && !DATA.pdf_b64){ DATA.pdf_b64=v; } else if(v && !DATA){ DATA = {pdf_b64: v}; } });
 })();
+// Si DATA vino null del servidor, intentar renderizar después de cargar desde cliente (evita flash 404)
+setTimeout(function(){ if(DATA && DATA.perfil_crediticio){ try{ render(); }catch(_){} } }, 300);
 
 function $(id){return document.getElementById(id)}
 function _getEnrichedData(cb){
   var tk = window.location.pathname.split('/').pop();
+  if(!DATA || typeof DATA !== 'object') DATA = {};
+  if(!Array.isArray(DATA.anexos)) DATA.anexos = [];
   var hasB64 = (DATA.anexos||[]).some(function(a){return !!a.b64;}) || !!DATA.pdf_b64;
   if(hasB64){ cb(DATA); return; }
   try{
     var st = JSON.parse(sessionStorage.getItem('credit_result_'+tk)||'null');
     if(st){
+      if(!DATA || typeof DATA !== 'object') DATA = {};
+      if(!Array.isArray(DATA.anexos)) DATA.anexos = [];
       var mp={}; (st.anexos||[]).forEach(function(a){ if(a.b64) mp[a.original_name||a.saved_name]=a.b64; });
       (DATA.anexos||[]).forEach(function(a){ if(!a.b64 && mp[a.original_name||a.saved_name]) a.b64=mp[a.original_name||a.saved_name]; });
       if(st.pdf_b64) DATA.pdf_b64=st.pdf_b64;
-      if((DATA.anexos||[]).some(function(a){return !!a.b64;}) || DATA.pdf_b64){ cb(DATA); return; }
+      if(((DATA.anexos||[]).some(function(a){return !!a.b64;}) || DATA.pdf_b64)){ cb(DATA); return; }
     }
   }catch(e){}
   idbGetJSON('credit_result_'+tk).then(function(st2){
@@ -4383,8 +4430,28 @@ function _getEnrichedData(cb){
 }
 function render(){
   try {
-    if(!DATA || typeof DATA !== 'object'){
-      throw new Error('Datos no disponibles (token expirado o DB efímera). Por favor genere una nueva evaluación.');
+    if(!DATA || typeof DATA !== 'object' || !DATA.perfil_crediticio){
+      // Si DATA vino null del servidor, esperar a que se cargue desde IndexedDB/sessionStorage
+      var tk2 = window.location.pathname.split('/').pop();
+      var hasClient = false;
+      try{ hasClient = !!sessionStorage.getItem('credit_result_'+tk2); }catch(_){}
+      if(!hasClient){
+        // Intentar IndexedDB de forma síncrona no es posible, mostrar cargando y reintentar
+        document.getElementById('app').innerHTML = '<div style="padding:40px;text-align:center"><div class="spin" style="width:24px;height:24px;border:3px solid #e5e7eb;border-top-color:#6941f4;border-radius:50%;animation:spin .6s linear infinite;margin:0 auto"></div><p style="color:#6b7280;margin-top:12px">Cargando resultado... si no carga, vuelve al evaluador y genera de nuevo.</p></div>';
+        // Reintentar en 800ms (tiempo para que IDB cargue)
+        setTimeout(function(){
+          // Si sigue sin DATA, intentar una vez más desde IDB
+          idbGetJSON('credit_result_'+tk2).then(function(v){
+            if(v && v.perfil_crediticio){ DATA = v; try{ render(); }catch(_){} }
+          });
+        }, 800);
+        return;
+      } else {
+        // Hay datos en sessionStorage pero DATA aún no se enriqueció (async), esperar
+        document.getElementById('app').innerHTML = '<div style="padding:40px;text-align:center"><div class="spin" style="width:24px;height:24px;border:3px solid #e5e7eb;border-top-color:#6941f4;border-radius:50%;animation:spin .6s linear infinite;margin:0 auto"></div><p style="color:#6b7280;margin-top:12px">Cargando resultado desde almacenamiento local...</p></div>';
+        setTimeout(function(){ try{ render(); }catch(_){} }, 500);
+        return;
+      }
     }
     var r=DATA, p=r.perfil_crediticio, ant=r.antecedentes||{}, res=r.resumen_ejecutivo, docs=(p && p.docs) || {};
     if(!p || !res){
